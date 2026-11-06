@@ -110,9 +110,19 @@ target_link_libraries(m6_arp_lab_probe_plan_tests PRIVATE interceptor_network Qt
 add_test(NAME m6_arp_lab_probe_plan COMMAND m6_arp_lab_probe_plan_tests)
 set_tests_properties(m6_arp_lab_probe_plan PROPERTIES TIMEOUT 30)
 
+qt_add_executable(m6_arp_lab_probe_runner_tests M6ArpLabProbeRunnerTests.cpp)
+target_link_libraries(m6_arp_lab_probe_runner_tests PRIVATE interceptor_network Qt6::Test)
+add_test(NAME m6_arp_lab_probe_runner COMMAND m6_arp_lab_probe_runner_tests)
+set_tests_properties(m6_arp_lab_probe_runner PROPERTIES TIMEOUT 30)
+
 if(APPLE)
     qt_add_executable(m6_mac_bpf_arp_packet_io_tests M6MacBpfArpPacketIoTests.cpp)
     target_link_libraries(m6_mac_bpf_arp_packet_io_tests PRIVATE interceptor_network Qt6::Test)
     add_test(NAME m6_mac_bpf_arp_packet_io COMMAND m6_mac_bpf_arp_packet_io_tests)
     set_tests_properties(m6_mac_bpf_arp_packet_io PROPERTIES TIMEOUT 30)
+
+    qt_add_executable(m6_arp_lab_probe_cli_tests M6ArpLabProbeCliTests.cpp)
+    target_link_libraries(m6_arp_lab_probe_cli_tests PRIVATE interceptor_network Qt6::Test)
+    add_test(NAME m6_arp_lab_probe_cli COMMAND m6_arp_lab_probe_cli_tests)
+    set_tests_properties(m6_arp_lab_probe_cli PROPERTIES TIMEOUT 60)
 endif()

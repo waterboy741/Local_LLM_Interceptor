@@ -1,5 +1,6 @@
 #pragma once
 
+#include "ArpLabProbePlan.hpp"
 #include "ArpNeighborAdapter.hpp"
 
 #include <QString>
@@ -42,6 +43,8 @@ class MacBpfArpPacketIo final : public ArpPacketIo {
 
     explicit MacBpfArpPacketIo(const SessionSnapshot &snapshot);
     MacBpfArpPacketIo(const SessionSnapshot &snapshot, BpfSystemCalls &systemCalls);
+    explicit MacBpfArpPacketIo(const ArpLabProbePlan &plan);
+    MacBpfArpPacketIo(const ArpLabProbePlan &plan, BpfSystemCalls &systemCalls);
     ~MacBpfArpPacketIo() override;
 
     MacBpfArpPacketIo(const MacBpfArpPacketIo &) = delete;
@@ -61,6 +64,8 @@ class MacBpfArpPacketIo final : public ArpPacketIo {
     void initialize();
     bool validFrame(const QByteArray &frame) const;
     void failAndClose(BpfArpWriterStatus status);
+    MacBpfArpPacketIo(const QString &interfaceName, QList<QByteArray> allowedFrames,
+                      BpfSystemCalls &systemCalls);
 
     QString interfaceName_;
     QList<QByteArray> allowedFrames_;

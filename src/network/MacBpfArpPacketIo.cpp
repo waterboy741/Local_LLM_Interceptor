@@ -74,6 +74,12 @@ BpfSystemCalls &nativeBpfSystemCalls() {
     return calls;
 }
 
+QList<QByteArray> snapshotFrameAllowlist(const SessionSnapshot &snapshot) {
+    auto frames = snapshot.redirectionFrames();
+    frames.append(snapshot.restorationFrames());
+    return frames;
+}
+
 bool validInterface(const QString &name) {
     static const QRegularExpression pattern("^[A-Za-z][A-Za-z0-9_.:-]{0,63}$");
     if (!pattern.match(name).hasMatch())
@@ -88,13 +94,23 @@ bool validInterface(const QString &name) {
 } // namespace
 
 MacBpfArpPacketIo::MacBpfArpPacketIo(const SessionSnapshot &snapshot)
-    : MacBpfArpPacketIo(snapshot, nativeBpfSystemCalls()) {}
+    : MacBpfArpPacketIo(snapshot.config().interfaceName, snapshotFrameAllowlist(snapshot),
+                        nativeBpfSystemCalls()) {}
 
 MacBpfArpPacketIo::MacBpfArpPacketIo(const SessionSnapshot &snapshot, BpfSystemCalls &systemCalls)
-    : interfaceName_(snapshot.config().interfaceName), allowedFrames_(snapshot.redirectionFrames()),
+    : MacBpfArpPacketIo(snapshot.config().interfaceName, snapshotFrameAllowlist(snapshot),
+                        systemCalls) {}
+
+MacBpfArpPacketIo::MacBpfArpPacketIo(const ArpLabProbePlan &plan)
+    : MacBpfArpPacketIo(plan.interfaceName(), plan.allowedFrames(), nativeBpfSystemCalls()) {}
+
+MacBpfArpPacketIo::MacBpfArpPacketIo(const ArpLabProbePlan &plan, BpfSystemCalls &systemCalls)
+    : MacBpfArpPacketIo(plan.interfaceName(), plan.allowedFrames(), systemCalls) {}
+
+MacBpfArpPacketIo::MacBpfArpPacketIo(const QString &interfaceName, QList<QByteArray> allowedFrames,
+                                     BpfSystemCalls &systemCalls)
+    : interfaceName_(interfaceName), allowedFrames_(std::move(allowedFrames)),
       systemCalls_(systemCalls) {
-    const auto restorations = snapshot.restorationFrames();
-    allowedFrames_.append(restorations);
     initialize();
 }
 

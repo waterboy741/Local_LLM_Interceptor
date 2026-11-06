@@ -105,6 +105,11 @@ target_link_libraries(m6_arp_neighbor_adapter_tests PRIVATE interceptor_network 
 add_test(NAME m6_arp_neighbor_adapter COMMAND m6_arp_neighbor_adapter_tests)
 set_tests_properties(m6_arp_neighbor_adapter PROPERTIES TIMEOUT 30)
 
+qt_add_executable(m6_arp_lab_probe_plan_tests M6ArpLabProbePlanTests.cpp)
+target_link_libraries(m6_arp_lab_probe_plan_tests PRIVATE interceptor_network Qt6::Test)
+add_test(NAME m6_arp_lab_probe_plan COMMAND m6_arp_lab_probe_plan_tests)
+set_tests_properties(m6_arp_lab_probe_plan PROPERTIES TIMEOUT 30)
+
 if(APPLE)
     qt_add_executable(m6_mac_bpf_arp_packet_io_tests M6MacBpfArpPacketIoTests.cpp)
     target_link_libraries(m6_mac_bpf_arp_packet_io_tests PRIVATE interceptor_network Qt6::Test)

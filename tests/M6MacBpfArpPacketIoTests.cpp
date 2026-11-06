@@ -98,11 +98,34 @@ SessionSnapshot makeSnapshot(const QString &interfaceName = "en0") {
     return *snapshot;
 }
 
+ArpLabProbePlan makeProbePlan() {
+    ArpLabProbeInputs inputs;
+    inputs.selectedInterfaceName = "en0";
+    inputs.observedInterfaceName = "en0";
+    inputs.researchIp = "192.0.2.20";
+    inputs.clientIp = "192.0.2.11";
+    inputs.serverIp = "192.0.2.31";
+    inputs.researchMac = "02:00:00:00:00:20";
+    inputs.clientMac = "02:00:00:00:00:11";
+    inputs.serverMac = "02:00:00:00:00:31";
+    const auto plan = ArpLabProbePlan::create(inputs);
+    if (!plan)
+        qFatal("Cannot construct synthetic ARP-only probe plan");
+    return *plan;
+}
+
 QByteArray validReplyFrame(const SessionSnapshot &snapshot) {
     const auto frame = snapshot.redirectionFrames().front();
     if (frame.size() != MacBpfArpPacketIo::arpFrameSize)
         qFatal("Cannot construct synthetic ARP reply");
     return frame;
+}
+
+QByteArray validUnplannedReply() {
+    return ArpCodec::encode({QByteArray::fromHex("020000000020"),
+                             QByteArray::fromHex("020000000044"),
+                             QByteArray::fromHex("020000000020"),
+                             QByteArray::fromHex("020000000044"), "192.0.2.44", "192.0.2.20", 2});
 }
 } // namespace
 
@@ -248,6 +271,46 @@ class M6MacBpfArpPacketIoTests : public QObject {
 
         QCOMPARE(writer.status(), BpfArpWriterStatus::InvalidFrame);
         QVERIFY(calls.writtenFrames.isEmpty());
+    }
+
+    void probeWriterAllowsOnlyItsTwoPlannedFrames() {
+        const auto plan = makeProbePlan();
+        FakeBpfSystemCalls calls;
+        MacBpfArpPacketIo writer(plan, calls);
+        QVERIFY(writer.isReady());
+        QCOMPARE(plan.allowedFrames().size(), 2);
+
+        for (const auto &frame : plan.allowedFrames())
+            QVERIFY(writer.sendFrame(plan.interfaceName(), frame));
+        QCOMPARE(calls.writtenFrames, plan.allowedFrames());
+
+        const auto unrelatedValidReply = ArpCodec::encode(
+            {QByteArray::fromHex("020000000020"), QByteArray::fromHex("020000000044"),
+             QByteArray::fromHex("020000000020"), QByteArray::fromHex("020000000044"), "192.0.2.44",
+             "192.0.2.20", 2});
+        QCOMPARE(unrelatedValidReply.size(), MacBpfArpPacketIo::arpFrameSize);
+        QVERIFY(ArpCodec::parse(unrelatedValidReply).has_value());
+        QVERIFY(!writer.sendFrame(plan.interfaceName(), unrelatedValidReply));
+        QCOMPARE(writer.status(), BpfArpWriterStatus::InvalidFrame);
+        QCOMPARE(calls.writtenFrames, plan.allowedFrames());
+    }
+
+    void snapshotWriterRetainsItsExistingFourFrameAllowlist() {
+        const auto snapshot = makeSnapshot();
+        FakeBpfSystemCalls calls;
+        MacBpfArpPacketIo writer(snapshot, calls);
+        QVERIFY(writer.isReady());
+        auto expectedFrames = snapshot.redirectionFrames();
+        expectedFrames.append(snapshot.restorationFrames());
+        QCOMPARE(expectedFrames.size(), 4);
+
+        for (const auto &frame : expectedFrames)
+            QVERIFY(writer.sendFrame(snapshot.facts().interfaceName, frame));
+        QCOMPARE(calls.writtenFrames, expectedFrames);
+
+        QVERIFY(!writer.sendFrame(snapshot.facts().interfaceName, validUnplannedReply()));
+        QCOMPARE(writer.status(), BpfArpWriterStatus::InvalidFrame);
+        QCOMPARE(calls.writtenFrames, expectedFrames);
     }
 
     void shortAndErrorWritesFailOnceAndRemainUncertain() {

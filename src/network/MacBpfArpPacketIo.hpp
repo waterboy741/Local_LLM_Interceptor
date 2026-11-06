@@ -22,6 +22,20 @@ enum class BpfArpWriterStatus {
     NotReady
 };
 
+struct BpfReadinessResult {
+    BpfArpWriterStatus status = BpfArpWriterStatus::NotReady;
+    bool deviceOpened = false;
+    bool interfaceBound = false;
+    bool ethernetLink = false;
+    bool headerComplete = false;
+    bool closeConfirmed = false;
+
+    bool ready() const {
+        return status == BpfArpWriterStatus::Ready && deviceOpened && interfaceBound &&
+               ethernetLink && headerComplete && closeConfirmed;
+    }
+};
+
 // Narrow seam around the system calls used by the macOS BPF writer. The overload accepting
 // this interface is intended for deterministic tests; production uses the native calls.
 class BpfSystemCalls {
@@ -57,6 +71,10 @@ class MacBpfArpPacketIo final : public ArpPacketIo {
     const QString &interfaceName() const { return interfaceName_; }
     bool lastWriteMayHaveApplied() const { return lastWriteMayHaveApplied_; }
 
+    static BpfReadinessResult probeReadiness(const QString &interfaceName);
+    static BpfReadinessResult probeReadiness(const QString &interfaceName,
+                                             BpfSystemCalls &systemCalls);
+
     bool sendFrame(const QString &interfaceName, const QByteArray &frame) override;
     bool close();
 
@@ -73,6 +91,12 @@ class MacBpfArpPacketIo final : public ArpPacketIo {
     int descriptor_ = -1;
     BpfArpWriterStatus status_ = BpfArpWriterStatus::NotReady;
     bool lastWriteMayHaveApplied_ = false;
+    bool deviceOpened_ = false;
+    bool interfaceBound_ = false;
+    bool ethernetLink_ = false;
+    bool headerComplete_ = false;
+    bool closeAttempted_ = false;
+    bool closeConfirmed_ = false;
 };
 
 } // namespace interceptor

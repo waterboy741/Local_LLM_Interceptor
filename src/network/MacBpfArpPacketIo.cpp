@@ -114,6 +114,24 @@ MacBpfArpPacketIo::MacBpfArpPacketIo(const QString &interfaceName, QList<QByteAr
     initialize();
 }
 
+BpfReadinessResult MacBpfArpPacketIo::probeReadiness(const QString &interfaceName) {
+    return probeReadiness(interfaceName, nativeBpfSystemCalls());
+}
+
+BpfReadinessResult MacBpfArpPacketIo::probeReadiness(const QString &interfaceName,
+                                                     BpfSystemCalls &systemCalls) {
+    MacBpfArpPacketIo probe(interfaceName, {}, systemCalls);
+    BpfReadinessResult result;
+    result.deviceOpened = probe.deviceOpened_;
+    result.interfaceBound = probe.interfaceBound_;
+    result.ethernetLink = probe.ethernetLink_;
+    result.headerComplete = probe.headerComplete_;
+    const auto setupStatus = probe.status_;
+    result.closeConfirmed = probe.close();
+    result.status = result.closeConfirmed ? setupStatus : probe.status_;
+    return result;
+}
+
 MacBpfArpPacketIo::~MacBpfArpPacketIo() { close(); }
 
 void MacBpfArpPacketIo::initialize() {
@@ -135,8 +153,10 @@ void MacBpfArpPacketIo::initialize() {
         int openError = 0;
         const QString path = QStringLiteral("/dev/bpf%1").arg(index);
         descriptor_ = systemCalls_.openDevice(path, flags, openError);
-        if (descriptor_ >= 0)
+        if (descriptor_ >= 0) {
+            deviceOpened_ = true;
             break;
+        }
         if (openError != EBUSY && openError != ENOENT) {
             status_ = BpfArpWriterStatus::OpenFailed;
             return;
@@ -155,12 +175,14 @@ void MacBpfArpPacketIo::initialize() {
         failAndClose(BpfArpWriterStatus::AttachFailed);
         return;
     }
+    interfaceBound_ = true;
 
     u_int linkType = 0;
     if (systemCalls_.ioctlDevice(descriptor_, BIOCGDLT, &linkType) < 0 || linkType != DLT_EN10MB) {
         failAndClose(BpfArpWriterStatus::UnsupportedLinkType);
         return;
     }
+    ethernetLink_ = true;
 
     u_int headerComplete = 1;
     if (systemCalls_.ioctlDevice(descriptor_, BIOCSHDRCMPLT, &headerComplete) < 0) {
@@ -173,6 +195,7 @@ void MacBpfArpPacketIo::initialize() {
         failAndClose(BpfArpWriterStatus::HeaderCompleteFailed);
         return;
     }
+    headerComplete_ = true;
     status_ = BpfArpWriterStatus::Ready;
 #endif
 }
@@ -217,11 +240,13 @@ bool MacBpfArpPacketIo::close() {
             return false;
         if (status_ == BpfArpWriterStatus::Ready)
             status_ = BpfArpWriterStatus::NotReady;
-        return true;
+        return closeAttempted_ && closeConfirmed_;
     }
     const int descriptor = descriptor_;
     descriptor_ = -1;
-    const bool succeeded = systemCalls_.closeDevice(descriptor) == 0;
+    closeAttempted_ = true;
+    closeConfirmed_ = systemCalls_.closeDevice(descriptor) == 0;
+    const bool succeeded = closeConfirmed_;
     status_ = succeeded ? BpfArpWriterStatus::NotReady : BpfArpWriterStatus::CloseFailed;
     return succeeded;
 }

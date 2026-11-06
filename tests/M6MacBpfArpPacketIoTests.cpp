@@ -1,6 +1,9 @@
+#include "network/ArpBpfReadinessCli.hpp"
 #include "network/ArpCodec.hpp"
 #include "network/MacBpfArpPacketIo.hpp"
 
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QtTest>
 
 #include <cerrno>
@@ -28,6 +31,7 @@ class FakeBpfSystemCalls final : public BpfSystemCalls {
     QList<QByteArray> writtenFrames;
     int descriptorsBeforeSuccess = 0;
     int descriptorToReturn = 42;
+    int forcedOpenError = 0;
     int linkType = DLT_EN10MB;
     int headerCompleteReadback = 1;
     unsigned long failingIoctl = 0;
@@ -37,6 +41,10 @@ class FakeBpfSystemCalls final : public BpfSystemCalls {
     int openDevice(const QString &path, int flags, int &errorNumber) override {
         openedPaths.append(path);
         openFlags.append(flags);
+        if (forcedOpenError != 0) {
+            errorNumber = forcedOpenError;
+            return -1;
+        }
         if (openedPaths.size() <= descriptorsBeforeSuccess) {
             errorNumber = openedPaths.size() % 2 ? EBUSY : ENOENT;
             return -1;
@@ -377,6 +385,177 @@ class M6MacBpfArpPacketIoTests : public QObject {
         QCOMPARE(calls.closedDescriptors, QList<int>({42}));
         QVERIFY(!writer.close());
         QCOMPARE(calls.closedDescriptors, QList<int>({42}));
+    }
+
+    void openOnlyReadinessSucceedsAndAlwaysClosesWithoutWriting() {
+        FakeBpfSystemCalls calls;
+
+        const auto result = MacBpfArpPacketIo::probeReadiness("en0", calls);
+
+        QVERIFY(result.ready());
+        QCOMPARE(result.status, BpfArpWriterStatus::Ready);
+        QVERIFY(result.deviceOpened);
+        QVERIFY(result.interfaceBound);
+        QVERIFY(result.ethernetLink);
+        QVERIFY(result.headerComplete);
+        QVERIFY(result.closeConfirmed);
+        QCOMPARE(calls.closedDescriptors, QList<int>({42}));
+        QVERIFY(calls.writtenFrames.isEmpty());
+    }
+
+    void openOnlyReadinessRejectsInvalidInterfaceBeforeOpen() {
+        FakeBpfSystemCalls calls;
+
+        const auto result = MacBpfArpPacketIo::probeReadiness("../en0", calls);
+
+        QVERIFY(!result.ready());
+        QCOMPARE(result.status, BpfArpWriterStatus::InvalidInterface);
+        QVERIFY(!result.deviceOpened);
+        QVERIFY(calls.openedPaths.isEmpty());
+        QVERIFY(calls.ioctlCalls.isEmpty());
+        QVERIFY(calls.closedDescriptors.isEmpty());
+        QVERIFY(calls.writtenFrames.isEmpty());
+    }
+
+    void openOnlyReadinessReportsPermissionFailureWithoutCleanupOrWrite() {
+        FakeBpfSystemCalls calls;
+        calls.forcedOpenError = EACCES;
+
+        const auto result = MacBpfArpPacketIo::probeReadiness("en0", calls);
+
+        QVERIFY(!result.ready());
+        QCOMPARE(result.status, BpfArpWriterStatus::OpenFailed);
+        QVERIFY(!result.deviceOpened);
+        QVERIFY(!result.interfaceBound);
+        QVERIFY(!result.closeConfirmed);
+        QCOMPARE(calls.openedPaths, QList<QString>({"/dev/bpf0"}));
+        QVERIFY(calls.ioctlCalls.isEmpty());
+        QVERIFY(calls.closedDescriptors.isEmpty());
+        QVERIFY(calls.writtenFrames.isEmpty());
+    }
+
+    void openOnlyReadinessClosesAfterBindDltAndHeaderFailures() {
+        struct SetupFailure {
+            unsigned long request;
+            int linkType;
+            int headerReadback;
+            BpfArpWriterStatus status;
+        };
+        const QList<SetupFailure> failures{
+            {BIOCSETIF, DLT_EN10MB, 1, BpfArpWriterStatus::AttachFailed},
+            {BIOCGDLT, DLT_EN10MB, 1, BpfArpWriterStatus::UnsupportedLinkType},
+            {0, 12, 1, BpfArpWriterStatus::UnsupportedLinkType},
+            {BIOCSHDRCMPLT, DLT_EN10MB, 1, BpfArpWriterStatus::HeaderCompleteFailed},
+            {BIOCGHDRCMPLT, DLT_EN10MB, 1, BpfArpWriterStatus::HeaderCompleteFailed},
+            {0, DLT_EN10MB, 0, BpfArpWriterStatus::HeaderCompleteFailed}};
+
+        for (const auto &failure : failures) {
+            FakeBpfSystemCalls calls;
+            calls.failingIoctl = failure.request;
+            calls.linkType = failure.linkType;
+            calls.headerCompleteReadback = failure.headerReadback;
+
+            const auto result = MacBpfArpPacketIo::probeReadiness("en0", calls);
+
+            QVERIFY(!result.ready());
+            QCOMPARE(result.status, failure.status);
+            QVERIFY(result.deviceOpened);
+            QVERIFY(result.closeConfirmed);
+            QCOMPARE(calls.closedDescriptors, QList<int>({42}));
+            QVERIFY(calls.writtenFrames.isEmpty());
+        }
+    }
+
+    void openOnlyReadinessReportsCloseFailureWithoutWriting() {
+        FakeBpfSystemCalls calls;
+        calls.closeResult = -1;
+
+        const auto result = MacBpfArpPacketIo::probeReadiness("en0", calls);
+
+        QVERIFY(!result.ready());
+        QCOMPARE(result.status, BpfArpWriterStatus::CloseFailed);
+        QVERIFY(result.deviceOpened);
+        QVERIFY(result.interfaceBound);
+        QVERIFY(result.ethernetLink);
+        QVERIFY(result.headerComplete);
+        QVERIFY(!result.closeConfirmed);
+        QCOMPARE(calls.closedDescriptors, QList<int>({42}));
+        QVERIFY(calls.writtenFrames.isEmpty());
+    }
+
+    void cliInvalidArgumentsNeverOpenDevice() {
+        const QList<QStringList> invalidArguments{{"arp_bpf_readiness"},
+                                                  {"arp_bpf_readiness", "--bogus"},
+                                                  {"arp_bpf_readiness", "--interface"}};
+        for (const auto &arguments : invalidArguments) {
+            FakeBpfSystemCalls calls;
+
+            const auto result = ArpBpfReadinessCli::run(arguments, calls);
+
+            QCOMPARE(result.exitCode, 2);
+            QVERIFY(result.standardOutput.isEmpty());
+            QVERIFY(!result.standardError.isEmpty());
+            QVERIFY(calls.openedPaths.isEmpty());
+            QVERIFY(calls.ioctlCalls.isEmpty());
+            QVERIFY(calls.writtenFrames.isEmpty());
+        }
+
+        FakeBpfSystemCalls invalidInterfaceCalls;
+        const auto invalidInterface = ArpBpfReadinessCli::run(
+            {"arp_bpf_readiness", "--interface", "../en0"}, invalidInterfaceCalls);
+        QCOMPARE(invalidInterface.exitCode, 1);
+        QVERIFY(invalidInterface.standardOutput.contains("invalid_interface"));
+        QVERIFY(invalidInterfaceCalls.openedPaths.isEmpty());
+        QVERIFY(invalidInterfaceCalls.ioctlCalls.isEmpty());
+        QVERIFY(invalidInterfaceCalls.writtenFrames.isEmpty());
+    }
+
+    void cliHelpVersionUnknownAndDuplicateArgumentsNeverOpenDevice() {
+        const QList<QPair<QStringList, int>> cases{
+            {{"arp_bpf_readiness", "--help"}, 0},
+            {{"arp_bpf_readiness", "--version"}, 0},
+            {{"arp_bpf_readiness", "--interface", "en0", "--interface", "en1"}, 2},
+            {{"arp_bpf_readiness", "--unknown"}, 2}};
+        for (const auto &testCase : cases) {
+            FakeBpfSystemCalls calls;
+
+            const auto result = ArpBpfReadinessCli::run(testCase.first, calls);
+
+            QCOMPARE(result.exitCode, testCase.second);
+            QVERIFY(calls.openedPaths.isEmpty());
+            QVERIFY(calls.ioctlCalls.isEmpty());
+            QVERIFY(calls.writtenFrames.isEmpty());
+        }
+    }
+
+    void cliSuccessReturnsSanitizedOpenOnlyJsonWithoutWriting() {
+        FakeBpfSystemCalls calls;
+
+        const auto result =
+            ArpBpfReadinessCli::run({"arp_bpf_readiness", "--interface", "en0"}, calls);
+
+        QCOMPARE(result.exitCode, 0);
+        QVERIFY(result.standardError.isEmpty());
+        QJsonParseError parseError;
+        const auto document = QJsonDocument::fromJson(result.standardOutput.toUtf8(), &parseError);
+        QCOMPARE(parseError.error, QJsonParseError::NoError);
+        QVERIFY(document.isObject());
+        const auto object = document.object();
+        QCOMPARE(object.value("status").toString(), QString("ready"));
+        QVERIFY(object.value("device_opened").toBool());
+        QVERIFY(object.value("interface_bound").toBool());
+        QVERIFY(object.value("ethernet_link").toBool());
+        QVERIFY(object.value("header_complete").toBool());
+        QVERIFY(object.value("close_confirmed").toBool());
+        QCOMPARE(object.value("traffic_sent").toBool(), false);
+        QCOMPARE(object.size(), 7);
+        QVERIFY(!result.standardOutput.contains("en0"));
+        QVERIFY(!result.standardOutput.contains("192."));
+        QVERIFY(!result.standardOutput.contains("02:00"));
+        QVERIFY(!result.standardOutput.contains("/dev/bpf"));
+        QVERIFY(!result.standardOutput.contains("errno"));
+        QCOMPARE(calls.closedDescriptors, QList<int>({42}));
+        QVERIFY(calls.writtenFrames.isEmpty());
     }
 };
 

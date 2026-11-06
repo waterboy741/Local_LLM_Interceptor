@@ -99,3 +99,8 @@ qt_add_executable(m6_helper_session_identity_tests M6HelperSessionIdentityTests.
 target_link_libraries(m6_helper_session_identity_tests PRIVATE interceptor_network Qt6::Test)
 add_test(NAME m6_helper_session_identity COMMAND m6_helper_session_identity_tests)
 set_tests_properties(m6_helper_session_identity PROPERTIES TIMEOUT 30)
+
+qt_add_executable(m6_arp_neighbor_adapter_tests M6ArpNeighborAdapterTests.cpp)
+target_link_libraries(m6_arp_neighbor_adapter_tests PRIVATE interceptor_network Qt6::Test)
+add_test(NAME m6_arp_neighbor_adapter COMMAND m6_arp_neighbor_adapter_tests)
+set_tests_properties(m6_arp_neighbor_adapter PROPERTIES TIMEOUT 30)

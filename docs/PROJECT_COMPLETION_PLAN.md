@@ -4,6 +4,8 @@ Status: planning checkpoint updated October 25, 2026. M0–M5 are complete under
 
 The offline M6 groundwork includes immutable session/PF/ARP plans, an offline session and rollback model, bounded Unix-socket Heartbeat/Stop transport and watchdog scheduling, read-only interface/route/neighbor/PF diagnostics, a scoped PF anchor adapter and bounded typed PF runner, a pre-install PF readiness probe, a host-wide lease primitive, a durable PF-anchor cleanup journal, and a coordinator that gates install/cleanup on that journal plus an injected empty-anchor verifier. These pieces are reviewed offline groundwork and remain unwired from GUI/live mutation paths; they do not prove PF evaluation, transparent delivery, or recovery of ARP/forwarding state. Device availability is not asserted here and must be confirmed before lab work.
 
+An authorized read-only TCP probe on November 5, 2026 was followed by neighbor-cache rows for the client and server on `en0`. These are current observations only: cached MAC mappings may be stale, and no raw MAC values were recorded or committed. They do not prove that either peer accepts injected ARP updates or that frames reach the selected interface.
+
 ## 1. Lab assets and actions needed from the user
 
 ### Assets and facts to have available

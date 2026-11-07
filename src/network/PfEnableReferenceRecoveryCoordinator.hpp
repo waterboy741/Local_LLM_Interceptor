@@ -22,6 +22,7 @@ class PfEnableReferenceRecoveryCoordinator final {
 
     PfEnableReferenceRecoveryResult acquire(const QString &sessionId);
     PfEnableReferenceRecoveryResult release(const QString &sessionId);
+    PfEnableReferenceRecoveryResult recoverRelease(const QString &sessionId);
 
   private:
     PfEnableReferenceRecoveryResult verifyAndClear(const QString &sessionId, quint64 token);
@@ -34,6 +35,7 @@ class PfEnableReferenceRecoveryCoordinator final {
     bool releasePendingDurable_ = false;
     bool releaseBlocked_ = false;
     bool releaseCompleted_ = false;
+    bool recoveryAttempted_ = false;
     std::optional<PfEnableReferenceReleaseReceipt> releaseReceipt_;
 };
 

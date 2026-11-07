@@ -99,12 +99,15 @@ class TraceTokenVerifier final : public PfEnableReferenceTokenVerifier {
   public:
     QStringList &events;
     PfEnableReferenceTokenState state = PfEnableReferenceTokenState::Absent;
+    QList<PfEnableReferenceTokenState> states;
     QVector<quint64> tokens;
 
     explicit TraceTokenVerifier(QStringList &trace) : events(trace) {}
     PfEnableReferenceTokenState verifyToken(quint64 token) override {
         events << "verify-token";
         tokens.append(token);
+        if (!states.isEmpty())
+            return states.takeFirst();
         return state;
     }
 };
@@ -122,6 +125,16 @@ qsizetype indexOf(const QStringList &events, const QString &event, qsizetype sta
         if (events[index] == event)
             return index;
     return -1;
+}
+
+void seedReleasePhase(PfEnableReferenceJournal &journal, const QString &sessionId, quint64 token,
+                      PfEnableReferenceJournalPhase phase) {
+    if (journal.persistAcquirePending(sessionId) != PfEnableReferenceJournalStatus::Persisted ||
+        journal.persistCapturedToken(sessionId, token) != PfEnableReferenceJournalStatus::Persisted)
+        qFatal("Could not seed synthetic PF reference journal");
+    if (phase == PfEnableReferenceJournalPhase::ReleasePending &&
+        journal.markReleasePending(sessionId, token) != PfEnableReferenceJournalStatus::Persisted)
+        qFatal("Could not seed synthetic release-pending record");
 }
 } // namespace
 
@@ -392,6 +405,200 @@ class M6PfEnableReferenceRecoveryCoordinatorTests : public QObject {
         QVERIFY(second.cleanupPending);
         QCOMPARE(runner.calls.size(), 2);
         QCOMPARE(runner.calls.last().arguments, (QStringList{"-X", "73"}));
+    }
+
+    void restartedReleasePendingAbsentClearsWithoutIssuingRelease() {
+        PrivateJournalDirectory directory;
+        QVERIFY(directory.valid());
+        QStringList events;
+        TraceJournalFileOps fileOps(events);
+        auto journal = PfEnableReferenceJournal::open(directory.fd(), &fileOps);
+        seedReleasePhase(journal, "session-a", 73, PfEnableReferenceJournalPhase::ReleasePending);
+        TracePfRunner runner(events);
+        TraceTokenVerifier verifier(events);
+        verifier.state = PfEnableReferenceTokenState::Absent;
+        PfEnableReferenceOwner owner(runner);
+        PfEnableReferenceRecoveryCoordinator coordinator(owner, journal, verifier);
+
+        const auto result = coordinator.recoverRelease("session-a");
+
+        QVERIFY(result.success);
+        QCOMPARE(result.statusCode, QString("recovered_token_already_absent"));
+        QVERIFY(runner.calls.isEmpty());
+        QCOMPARE(verifier.tokens, QVector<quint64>({73, 73}));
+        QCOMPARE(journal.read().status, PfEnableReferenceJournalStatus::Missing);
+    }
+
+    void restartedReleasePendingActiveOrUnknownNeverRepeatsRelease() {
+        for (const auto state :
+             {PfEnableReferenceTokenState::Active, PfEnableReferenceTokenState::Unknown}) {
+            PrivateJournalDirectory directory;
+            QVERIFY(directory.valid());
+            QStringList events;
+            TraceJournalFileOps fileOps(events);
+            auto journal = PfEnableReferenceJournal::open(directory.fd(), &fileOps);
+            seedReleasePhase(journal, "session-a", 73,
+                             PfEnableReferenceJournalPhase::ReleasePending);
+            TracePfRunner runner(events);
+            TraceTokenVerifier verifier(events);
+            verifier.state = state;
+            PfEnableReferenceOwner owner(runner);
+            PfEnableReferenceRecoveryCoordinator coordinator(owner, journal, verifier);
+
+            const auto result = coordinator.recoverRelease("session-a");
+
+            QVERIFY(!result.success);
+            QVERIFY(result.cleanupPending);
+            QCOMPARE(runner.calls.size(), 0);
+            QCOMPARE(verifier.tokens, QVector<quint64>{73});
+            QCOMPARE(journal.read().record->phase, PfEnableReferenceJournalPhase::ReleasePending);
+        }
+    }
+
+    void releaseNeededUnknownRetainsAndAbsentClearsWithoutCommand() {
+        for (const auto state :
+             {PfEnableReferenceTokenState::Unknown, PfEnableReferenceTokenState::Absent}) {
+            PrivateJournalDirectory directory;
+            QVERIFY(directory.valid());
+            QStringList events;
+            TraceJournalFileOps fileOps(events);
+            auto journal = PfEnableReferenceJournal::open(directory.fd(), &fileOps);
+            seedReleasePhase(journal, "session-a", 73,
+                             PfEnableReferenceJournalPhase::ReleaseNeeded);
+            TracePfRunner runner(events);
+            TraceTokenVerifier verifier(events);
+            verifier.state = state;
+            PfEnableReferenceOwner owner(runner);
+            PfEnableReferenceRecoveryCoordinator coordinator(owner, journal, verifier);
+
+            const auto result = coordinator.recoverRelease("session-a");
+
+            QCOMPARE(runner.calls.size(), 0);
+            if (state == PfEnableReferenceTokenState::Absent) {
+                QVERIFY(result.success);
+                QCOMPARE(result.statusCode, QString("recovered_token_already_absent"));
+                QCOMPARE(journal.read().status, PfEnableReferenceJournalStatus::Missing);
+            } else {
+                QVERIFY(!result.success);
+                QVERIFY(result.cleanupPending);
+                QCOMPARE(journal.read().record->phase,
+                         PfEnableReferenceJournalPhase::ReleaseNeeded);
+            }
+        }
+    }
+
+    void releaseNeededActivePersistsBeforeAdoptingAndIssuingOneRelease() {
+        PrivateJournalDirectory directory;
+        QVERIFY(directory.valid());
+        QStringList events;
+        TraceJournalFileOps fileOps(events);
+        auto journal = PfEnableReferenceJournal::open(directory.fd(), &fileOps);
+        seedReleasePhase(journal, "session-a", 73, PfEnableReferenceJournalPhase::ReleaseNeeded);
+        TracePfRunner runner(events);
+        runner.results.append(releaseResult());
+        TraceTokenVerifier verifier(events);
+        verifier.states = {PfEnableReferenceTokenState::Active, PfEnableReferenceTokenState::Active,
+                           PfEnableReferenceTokenState::Absent};
+        PfEnableReferenceOwner owner(runner);
+        PfEnableReferenceRecoveryCoordinator coordinator(owner, journal, verifier);
+
+        const auto result = coordinator.recoverRelease("session-a");
+
+        QVERIFY(result.success);
+        QCOMPARE(result.statusCode, QString("recovered_reference_released"));
+        QCOMPARE(runner.calls.size(), 1);
+        QCOMPARE(runner.calls.first().arguments, (QStringList{"-X", "73"}));
+        QCOMPARE(journal.read().status, PfEnableReferenceJournalStatus::Missing);
+        const auto releaseAt = indexOf(events, "-X");
+        QVERIFY(releaseAt > 0);
+        const auto initialVerify = indexOf(events, "verify-token");
+        QVERIFY(initialVerify >= 0);
+        const auto pendingSync = indexOf(events, "sync-directory", initialVerify + 1);
+        QVERIFY(pendingSync > initialVerify);
+        const auto freshVerify = indexOf(events, "verify-token", pendingSync + 1);
+        QVERIFY(freshVerify > pendingSync);
+        QVERIFY(releaseAt > freshVerify);
+        QVERIFY(indexOf(events, "verify-token", releaseAt + 1) > releaseAt);
+
+        const auto repeated = coordinator.recoverRelease("session-a");
+        QVERIFY(!repeated.success);
+        QCOMPARE(repeated.statusCode, QString("recovery_already_attempted"));
+        QCOMPARE(runner.calls.size(), 1);
+    }
+
+    void uncertainReleaseAfterRestartLeavesPendingAndNextRestartDoesNotRetry() {
+        PrivateJournalDirectory directory;
+        QVERIFY(directory.valid());
+        QStringList events;
+        TraceJournalFileOps fileOps(events);
+        auto journal = PfEnableReferenceJournal::open(directory.fd(), &fileOps);
+        seedReleasePhase(journal, "session-a", 73, PfEnableReferenceJournalPhase::ReleaseNeeded);
+        TracePfRunner runner(events);
+        runner.results.append({PfEnableReferenceCommandStatus::TimedOut, -1, true, false, {}});
+        TraceTokenVerifier verifier(events);
+        verifier.states = {PfEnableReferenceTokenState::Active,
+                           PfEnableReferenceTokenState::Active};
+        PfEnableReferenceOwner owner(runner);
+        PfEnableReferenceRecoveryCoordinator coordinator(owner, journal, verifier);
+
+        const auto result = coordinator.recoverRelease("session-a");
+        QVERIFY(!result.success);
+        QVERIFY(result.cleanupPending);
+        QCOMPARE(runner.calls.size(), 1);
+        QCOMPARE(journal.read().record->phase, PfEnableReferenceJournalPhase::ReleasePending);
+
+        TracePfRunner restartedRunner(events);
+        TraceTokenVerifier restartedVerifier(events);
+        restartedVerifier.state = PfEnableReferenceTokenState::Active;
+        PfEnableReferenceOwner restartedOwner(restartedRunner);
+        PfEnableReferenceRecoveryCoordinator restarted(restartedOwner, journal, restartedVerifier);
+        const auto retained = restarted.recoverRelease("session-a");
+        QVERIFY(!retained.success);
+        QVERIFY(retained.cleanupPending);
+        QCOMPARE(restartedRunner.calls.size(), 0);
+        QCOMPARE(journal.read().record->phase, PfEnableReferenceJournalPhase::ReleasePending);
+    }
+
+    void ownerAndUnreleasablePhasesBlockAutomaticRecovery() {
+        for (const auto phase : {PfEnableReferenceJournalPhase::AcquirePending,
+                                 PfEnableReferenceJournalPhase::AcquireUncertain,
+                                 PfEnableReferenceJournalPhase::AcquireUncertainWithToken}) {
+            PrivateJournalDirectory directory;
+            QVERIFY(directory.valid());
+            QStringList events;
+            TraceJournalFileOps fileOps(events);
+            auto journal = PfEnableReferenceJournal::open(directory.fd(), &fileOps);
+            QCOMPARE(journal.persistAcquirePending("session-a"),
+                     PfEnableReferenceJournalStatus::Persisted);
+            if (phase != PfEnableReferenceJournalPhase::AcquirePending)
+                QCOMPARE(journal.markAcquisitionUncertain(
+                             "session-a", phase == PfEnableReferenceJournalPhase::AcquireUncertain
+                                              ? std::nullopt
+                                              : std::optional<quint64>(73)),
+                         PfEnableReferenceJournalStatus::Persisted);
+            TracePfRunner runner(events);
+            TraceTokenVerifier verifier(events);
+            verifier.state = PfEnableReferenceTokenState::Active;
+            PfEnableReferenceOwner owner(runner);
+            PfEnableReferenceRecoveryCoordinator coordinator(owner, journal, verifier);
+
+            const auto blockedPhase = coordinator.recoverRelease("session-a");
+            QVERIFY(!blockedPhase.success);
+            QVERIFY(blockedPhase.cleanupPending);
+            QCOMPARE(runner.calls.size(), 0);
+            QCOMPARE(verifier.tokens.size(), 0);
+            QCOMPARE(journal.read().record->sessionId, QString("session-a"));
+
+            TracePfRunner mismatchRunner(events);
+            TraceTokenVerifier mismatchVerifier(events);
+            PfEnableReferenceOwner mismatchOwner(mismatchRunner);
+            PfEnableReferenceRecoveryCoordinator mismatch(mismatchOwner, journal, mismatchVerifier);
+            const auto wrongOwner = mismatch.recoverRelease("session-b");
+            QVERIFY(!wrongOwner.success);
+            QVERIFY(wrongOwner.cleanupPending);
+            QCOMPARE(mismatchRunner.calls.size(), 0);
+            QVERIFY(mismatchVerifier.tokens.isEmpty());
+        }
     }
 };
 

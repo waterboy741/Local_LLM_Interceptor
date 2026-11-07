@@ -442,6 +442,43 @@ PfEnableReferenceJournalStatus PfEnableReferenceJournal::clearAfterVerifiedRelea
     return PfEnableReferenceJournalStatus::Cleared;
 }
 
+PfEnableReferenceJournalStatus PfEnableReferenceJournal::clearAfterVerifiedAbsence(
+    const QString &sessionId, quint64 token, PfEnableReferenceTokenVerifier &verifier) const {
+    if (!valid())
+        return PfEnableReferenceJournalStatus::InvalidDirectory;
+    QByteArray owner;
+    if (!validOwner(sessionId, &owner))
+        return PfEnableReferenceJournalStatus::InvalidOwner;
+    if (token == 0)
+        return PfEnableReferenceJournalStatus::InvalidToken;
+    const auto guard = lockDirectory(directoryFd_);
+    if (guard.fd() < 0)
+        return PfEnableReferenceJournalStatus::LockFailed;
+    const auto existing = readUnlocked(directoryFd_);
+    if (existing.status != PfEnableReferenceJournalStatus::Present || !existing.record)
+        return existing.status;
+    if (existing.record->sessionId != sessionId || existing.record->token != token)
+        return PfEnableReferenceJournalStatus::OwnerConflict;
+    if (existing.record->phase != PfEnableReferenceJournalPhase::ReleaseNeeded &&
+        existing.record->phase != PfEnableReferenceJournalPhase::ReleasePending)
+        return PfEnableReferenceJournalStatus::InvalidTransition;
+    PfEnableReferenceTokenState verification;
+    try {
+        verification = verifier.verifyToken(token);
+    } catch (...) {
+        verification = PfEnableReferenceTokenState::Unknown;
+    }
+    if (verification == PfEnableReferenceTokenState::Active)
+        return PfEnableReferenceJournalStatus::TokenStillActive;
+    if (verification != PfEnableReferenceTokenState::Absent)
+        return PfEnableReferenceJournalStatus::VerificationUnknown;
+    if (fileOps_->unlinkAt(directoryFd_, journalName) < 0)
+        return PfEnableReferenceJournalStatus::IoFailed;
+    if (fileOps_->syncDirectory(directoryFd_) < 0)
+        return PfEnableReferenceJournalStatus::DurabilityUncertain;
+    return PfEnableReferenceJournalStatus::Cleared;
+}
+
 QString PfEnableReferenceJournal::statusName(PfEnableReferenceJournalStatus status) {
     switch (status) {
     case PfEnableReferenceJournalStatus::Ready:

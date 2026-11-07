@@ -92,6 +92,9 @@ class PfEnableReferenceJournal final {
     clearAfterVerifiedRelease(const QString &sessionId,
                               const PfEnableReferenceReleaseReceipt &receipt,
                               PfEnableReferenceTokenVerifier &verifier) const;
+    PfEnableReferenceJournalStatus clearAfterVerifiedAbsence(const QString &sessionId,
+                                                             quint64 token,
+                                                             PfEnableReferenceTokenVerifier &verifier) const;
 
     static QString statusName(PfEnableReferenceJournalStatus status);
     static QString phaseName(PfEnableReferenceJournalPhase phase);

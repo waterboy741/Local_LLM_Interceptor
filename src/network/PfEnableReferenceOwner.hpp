@@ -55,6 +55,19 @@ class PfEnableReferenceReleaseReceipt {
     friend class PfEnableReferenceOwner;
 };
 
+class PfEnableReferenceRecoveryToken {
+  public:
+    quint64 token() const { return token_; }
+    QString sessionId() const { return sessionId_; }
+
+  private:
+    PfEnableReferenceRecoveryToken(QString sessionId, quint64 token)
+        : sessionId_(std::move(sessionId)), token_(token) {}
+    QString sessionId_;
+    quint64 token_;
+    friend class PfEnableReferenceRecoveryCoordinator;
+};
+
 class PfEnableReferenceCommandRunner {
   public:
     virtual ~PfEnableReferenceCommandRunner() = default;
@@ -99,6 +112,7 @@ class PfEnableReferenceOwner {
     explicit PfEnableReferenceOwner(PfEnableReferenceCommandRunner &runner) : runner_(runner) {}
     PfEnableReferenceResult acquire();
     PfEnableReferenceResult release();
+    bool adoptRecoveredToken(const PfEnableReferenceRecoveryToken &recoveryToken);
     PfEnableReferenceState state() const { return state_; }
     std::optional<quint64> recoveryToken() const { return token_; }
 

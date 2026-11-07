@@ -150,4 +150,14 @@ PfEnableReferenceResult PfEnableReferenceOwner::release() {
             token_, std::nullopt};
 }
 
+bool PfEnableReferenceOwner::adoptRecoveredToken(
+    const PfEnableReferenceRecoveryToken &recoveryToken) {
+    if (state_ != PfEnableReferenceState::Unacquired || recoveryToken.token() == 0 ||
+        recoveryToken.sessionId().isEmpty())
+        return false;
+    token_ = recoveryToken.token();
+    state_ = PfEnableReferenceState::Owned;
+    return true;
+}
+
 } // namespace interceptor

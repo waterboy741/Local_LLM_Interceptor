@@ -181,6 +181,8 @@ Acceptance:
 
 ### M6 — Authorized Lab Validation
 
+The remaining implementation order and live acceptance gates are tracked in [M6 live transparent redirection handoff](docs/M6_LIVE_HANDOFF.md).
+
 Perform every verification requiring the test Wi-Fi network or actual client/server assets here, after offline work is ready and lab access is available. Record the actual client/API paths, Ollama version/model, addresses, interface, subnet/L2 behavior, server LAN bind/firewall, OS versions, and applicable network policy.
 
 Acceptance:

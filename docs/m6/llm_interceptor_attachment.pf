@@ -1,0 +1,4 @@
+# llm_interceptor dedicated PF attachment points.
+# Preserve all existing main rules, including com.apple anchors.
+rdr-anchor "llm_interceptor/*"
+anchor "llm_interceptor/*"

@@ -85,6 +85,17 @@ The JSON deliberately reports `references_observed_only: true` and `packet_evalu
 
 The current user-reported PF status was disabled (`Status: Disabled`, with the recognized `Debug: Urgent` suffix), so the readiness result should remain false until PF is enabled through the host's own administration. The application does not enable PF.
 
+### PF attachment fragment preparation (M6 preparation only)
+
+`pf_attachment_prepare` emits the exact fragment in [`docs/m6/llm_interceptor_attachment.pf`](m6/llm_interceptor_attachment.pf) only after a local syntax-only check succeeds. It runs the fixed command `/sbin/pfctl -n -f -` with that fragment on standard input; it does not enable PF, load rules, touch `/etc/pf.conf`, flush state, or write files. Standard output contains only the validated fragment so it can be redirected to an operator review file. Standard error contains sanitized status JSON. On non-macOS systems it reports `unsupported_platform` without attempting a PF command.
+
+```sh
+./build/debug/pf_attachment_prepare > "$TMPDIR/llm_interceptor_attachment.pf"
+cat "$TMPDIR/llm_interceptor_attachment.pf"
+```
+
+The two references are deliberately ordered with translation first for PF syntax. When an administrator reviews a future system configuration change, place the `rdr-anchor` directive in the translation section and the `anchor` directive in the filter section, before that section's rules; do not append both after the existing filter section. Preserve every existing rule and all `com.apple/*` anchors. The fragment is an insertion-point proposal, not an active attachment or complete `pf.conf`; isolated syntax success does not prove effective placement, runtime evaluation, listener delivery, or a working proxy path. Current reported PF status is disabled, and this tool does not enable it.
+
 ```sh
 ./build/debug/pf_readiness --timeout-ms 3000
 ```

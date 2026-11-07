@@ -55,6 +55,14 @@ target_link_libraries(m6_pf_readiness_cli_tests PRIVATE interceptor_network Qt6:
 add_test(NAME m6_pf_readiness_cli COMMAND m6_pf_readiness_cli_tests)
 set_tests_properties(m6_pf_readiness_cli PROPERTIES TIMEOUT 30)
 
+qt_add_executable(m6_pf_attachment_preparation_cli_tests M6PfAttachmentPreparationCliTests.cpp)
+target_link_libraries(m6_pf_attachment_preparation_cli_tests PRIVATE interceptor_network Qt6::Test)
+target_compile_definitions(m6_pf_attachment_preparation_cli_tests PRIVATE
+    INTERCEPTOR_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+)
+add_test(NAME m6_pf_attachment_preparation_cli COMMAND m6_pf_attachment_preparation_cli_tests)
+set_tests_properties(m6_pf_attachment_preparation_cli PROPERTIES TIMEOUT 30)
+
 qt_add_executable(m6_route_neighbor_diagnostics_tests M6RouteNeighborDiagnosticsTests.cpp)
 target_link_libraries(m6_route_neighbor_diagnostics_tests PRIVATE interceptor_network Qt6::Test)
 add_test(NAME m6_route_neighbor_diagnostics COMMAND m6_route_neighbor_diagnostics_tests)

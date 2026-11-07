@@ -673,6 +673,8 @@ struct ProxyServer::Impl {
     QThread thread;
     Engine *engine = nullptr;
     quint16 port = 0;
+    QString boundAddress;
+    std::optional<TransparentProxyReadiness> transparentReadiness;
 };
 ProxyServer::ProxyServer(QObject *parent) : QObject(parent) {}
 ProxyServer::~ProxyServer() { stop(); }
@@ -687,6 +689,7 @@ bool ProxyServer::start(const SessionConfig &config, const ProxyOptions &options
     const bool remoteExplicitProxy = config.explicitProxy && !config.interfaceName.isEmpty();
     const bool localExplicitProxy = config.explicitProxy && config.interfaceName.isEmpty() &&
                                     QHostAddress(config.clientIp).isLoopback();
+    const auto selectedInterface = QNetworkInterface::interfaceFromName(config.interfaceName);
     QHostAddress listenAddress;
     if (!listenAddress.setAddress(options.listenAddress) ||
         listenAddress.protocol() != QAbstractSocket::IPv4Protocol || listenAddress.isNull() ||
@@ -694,16 +697,23 @@ bool ProxyServer::start(const SessionConfig &config, const ProxyOptions &options
         listenAddress == QHostAddress::Broadcast ||
         (listenAddress.toIPv4Address() & 0xffff0000U) == 0xa9fe0000U)
         return false;
-    if (remoteExplicitProxy) {
-        const auto networkInterface = QNetworkInterface::interfaceFromName(config.interfaceName);
+    if (options.transparentRedirect) {
+        if (config.explicitProxy || !config.validate().isEmpty() ||
+            options.listenAddress != QStringLiteral("127.0.0.1") ||
+            options.allowedClientIp != config.clientIp || !selectedInterface.isValid() ||
+            selectedInterface.flags().testFlag(QNetworkInterface::IsLoopBack) ||
+            !selectedInterface.flags().testFlag(QNetworkInterface::IsUp) ||
+            !selectedInterface.flags().testFlag(QNetworkInterface::IsRunning))
+            return false;
+    } else if (remoteExplicitProxy) {
         if (options.listenAddress == config.clientIp || listenAddress.isLoopback() ||
-            !networkInterface.isValid() ||
-            !networkInterface.flags().testFlag(QNetworkInterface::IsUp) ||
-            !networkInterface.flags().testFlag(QNetworkInterface::IsRunning) ||
+            !selectedInterface.isValid() ||
+            !selectedInterface.flags().testFlag(QNetworkInterface::IsUp) ||
+            !selectedInterface.flags().testFlag(QNetworkInterface::IsRunning) ||
             options.allowedClientIp != config.clientIp)
             return false;
         bool addressBelongsToInterface = false;
-        for (const auto &entry : networkInterface.addressEntries())
+        for (const auto &entry : selectedInterface.addressEntries())
             if (entry.ip() == listenAddress &&
                 entry.ip().protocol() == QAbstractSocket::IPv4Protocol)
                 addressBelongsToInterface = true;
@@ -738,14 +748,21 @@ bool ProxyServer::start(const SessionConfig &config, const ProxyOptions &options
         [this, config, options, anchor] {
             impl_->engine = new Engine(config, options);
             impl_->engine->modification = modification_;
-            if (impl_->engine->begin())
+            if (impl_->engine->begin()) {
                 impl_->port = impl_->engine->listener.serverPort();
+                impl_->boundAddress = impl_->engine->listener.serverAddress().toString();
+            }
             delete anchor;
         },
         Qt::BlockingQueuedConnection);
     if (!impl_->port) {
         stop();
         return false;
+    }
+    if (options.transparentRedirect) {
+        impl_->transparentReadiness = TransparentProxyReadiness{
+            config.interfaceName, impl_->boundAddress,           options.allowedClientIp,
+            config.serverIp,      static_cast<int>(impl_->port), config.serverPort};
     }
     return true;
 }
@@ -766,6 +783,47 @@ void ProxyServer::stop() {
     impl_.reset();
 }
 quint16 ProxyServer::listenPort() const { return impl_ ? impl_->port : 0; }
+std::optional<TransparentProxyReadiness> ProxyServer::transparentReadiness() const {
+    Q_ASSERT(QThread::currentThread() == thread());
+    if (QThread::currentThread() != thread())
+        return std::nullopt;
+    if (!impl_ || !impl_->transparentReadiness ||
+        !isTransparentReadinessCurrent(*impl_->transparentReadiness))
+        return std::nullopt;
+    return impl_->transparentReadiness;
+}
+bool ProxyServer::isTransparentReadinessCurrent(const TransparentProxyReadiness &readiness) const {
+    Q_ASSERT(QThread::currentThread() == thread());
+    if (QThread::currentThread() != thread())
+        return false;
+    if (!impl_ || !impl_->engine || !impl_->transparentReadiness)
+        return false;
+    const auto &current = *impl_->transparentReadiness;
+    const auto selectedInterface = QNetworkInterface::interfaceFromName(readiness.interfaceName());
+    if (!selectedInterface.isValid() ||
+        selectedInterface.flags().testFlag(QNetworkInterface::IsLoopBack) ||
+        !selectedInterface.flags().testFlag(QNetworkInterface::IsUp) ||
+        !selectedInterface.flags().testFlag(QNetworkInterface::IsRunning))
+        return false;
+    bool listening = false;
+    QString address;
+    quint16 port = 0;
+    QMetaObject::invokeMethod(
+        impl_->engine,
+        [this, &listening, &address, &port] {
+            listening = impl_->engine->listener.isListening();
+            address = impl_->engine->listener.serverAddress().toString();
+            port = impl_->engine->listener.serverPort();
+        },
+        Qt::BlockingQueuedConnection);
+    return listening && address == readiness.listenAddress() && port == readiness.listenerPort() &&
+           current.interfaceName() == readiness.interfaceName() &&
+           current.listenAddress() == readiness.listenAddress() &&
+           current.allowedClientIp() == readiness.allowedClientIp() &&
+           current.upstreamServerIp() == readiness.upstreamServerIp() &&
+           current.listenerPort() == readiness.listenerPort() &&
+           current.upstreamServerPort() == readiness.upstreamServerPort();
+}
 std::vector<ObservedRequest> ProxyServer::history() const {
     Q_ASSERT(QThread::currentThread() == thread());
     if (!impl_)

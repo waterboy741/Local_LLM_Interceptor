@@ -16,6 +16,10 @@ class SessionSnapshot {
     static std::optional<SessionSnapshot> create(const SessionConfig &, const NetworkFacts &,
                                                  int proxyPort, const QString &sessionId,
                                                  QString *error = nullptr);
+    static std::optional<SessionSnapshot> create(const SessionConfig &, const NetworkFacts &,
+                                                 const TransparentProxyReadiness &,
+                                                 const QString &sessionId,
+                                                 QString *error = nullptr);
     const SessionConfig &config() const { return config_; }
     const NetworkFacts &facts() const { return facts_; }
     int proxyPort() const { return proxyPort_; }

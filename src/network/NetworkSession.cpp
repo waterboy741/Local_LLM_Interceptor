@@ -75,6 +75,26 @@ std::optional<SessionSnapshot> SessionSnapshot::create(const SessionConfig &conf
     snapshot.sessionId_ = sessionId;
     return snapshot;
 }
+std::optional<SessionSnapshot> SessionSnapshot::create(const SessionConfig &config,
+                                                       const NetworkFacts &facts,
+                                                       const TransparentProxyReadiness &readiness,
+                                                       const QString &sessionId, QString *error) {
+    if (readiness.interfaceName() != config.interfaceName ||
+        readiness.listenAddress() != QStringLiteral("127.0.0.1") || readiness.listenerPort() < 1 ||
+        readiness.listenerPort() > 65535 || readiness.allowedClientIp() != config.clientIp ||
+        readiness.upstreamServerIp() != config.serverIp ||
+        readiness.upstreamServerPort() != config.serverPort) {
+        if (error)
+            *error = QStringLiteral("Transparent proxy readiness does not match session endpoint");
+        return std::nullopt;
+    }
+    auto boundFacts = facts;
+    boundFacts.proxyServerIp = readiness.upstreamServerIp();
+    boundFacts.proxyServerPort = readiness.upstreamServerPort();
+    boundFacts.proxyListenPort = readiness.listenerPort();
+    boundFacts.proxyReady = true;
+    return create(config, boundFacts, readiness.listenerPort(), sessionId, error);
+}
 QString SessionSnapshot::pfRules() const {
     const auto iface = '"' + config_.interfaceName + '"';
     const auto label = '"' + QString("llm_") + sessionId_ + '"';

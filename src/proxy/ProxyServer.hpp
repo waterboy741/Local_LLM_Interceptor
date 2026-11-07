@@ -4,6 +4,7 @@
 #include <QJsonValue>
 #include <QObject>
 #include <memory>
+#include <optional>
 #include <vector>
 namespace interceptor {
 struct ProxyOptions {
@@ -11,6 +12,7 @@ struct ProxyOptions {
     QString allowedClientIp;
     int listenPort = 0;
     int timeoutMs = 2000;
+    bool transparentRedirect = false;
     std::size_t maxBodyBytes = 1048576;
     std::size_t maxHistory = 100;
     std::size_t maxHistoryBytes = 8 * 1024 * 1024;
@@ -56,6 +58,8 @@ class ProxyServer : public QObject {
     bool start(const SessionConfig &, const ProxyOptions & = {});
     void stop();
     quint16 listenPort() const;
+    std::optional<TransparentProxyReadiness> transparentReadiness() const;
+    bool isTransparentReadinessCurrent(const TransparentProxyReadiness &) const;
     std::vector<ObservedRequest> history() const;
     bool setModificationOptions(const ModificationOptions &);
     std::vector<HeldRequest> held() const;

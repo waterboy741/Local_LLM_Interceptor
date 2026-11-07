@@ -70,8 +70,119 @@ class M2ProxyTests : public QObject {
         }
         return std::nullopt;
     }
+    static bool loopbackListenerAvailable() {
+        QTcpServer server;
+        const bool available = server.listen(QHostAddress::LocalHost, 0);
+        server.close();
+        return available;
+    }
 
   private slots:
+    void transparentRedirectReportsTheActualLoopbackListenerAndFixedUpstream() {
+        const auto selected = activeNonLoopbackIPv4();
+        if (!selected)
+            QSKIP("A selected active interface is required for transparent readiness");
+        if (!loopbackListenerAvailable())
+            QSKIP("This environment does not permit local loopback listeners");
+
+        SessionConfig config{selected->first,
+                             "192.0.2.10",
+                             "192.0.2.30",
+                             18081,
+                             {"/api/generate", "/api/chat"},
+                             false};
+        QVERIFY(config.validate().isEmpty());
+        ProxyOptions options;
+        options.transparentRedirect = true;
+        options.allowedClientIp = config.clientIp;
+
+        ProxyServer proxy;
+        QVERIFY(proxy.start(config, options));
+        const auto readiness = proxy.transparentReadiness();
+        QVERIFY(readiness.has_value());
+        QVERIFY(proxy.isTransparentReadinessCurrent(*readiness));
+        QCOMPARE(readiness->listenAddress(), QStringLiteral("127.0.0.1"));
+        QCOMPARE(readiness->listenerPort(), static_cast<int>(proxy.listenPort()));
+        QVERIFY(readiness->listenerPort() > 0);
+        QCOMPARE(readiness->allowedClientIp(), config.clientIp);
+        QCOMPARE(readiness->upstreamServerIp(), config.serverIp);
+        QCOMPARE(readiness->upstreamServerPort(), config.serverPort);
+
+        proxy.stop();
+        QCOMPARE(proxy.listenPort(), quint16(0));
+        QVERIFY(!proxy.transparentReadiness().has_value());
+        QVERIFY(!proxy.isTransparentReadinessCurrent(*readiness));
+    }
+
+    void transparentRedirectRejectsInvalidModeBindInterfaceAndClientBeforeListen() {
+        const auto selected = activeNonLoopbackIPv4();
+        if (!selected)
+            QSKIP("A selected active interface is required for transparent validation");
+
+        const SessionConfig valid{selected->first, "192.0.2.10",      "192.0.2.30",
+                                  18081,           {"/api/generate"}, false};
+        const auto assertRejected = [&](const SessionConfig &config, const ProxyOptions &options) {
+            ProxyServer proxy;
+            QVERIFY(!proxy.start(config, options));
+            QCOMPARE(proxy.listenPort(), quint16(0));
+            QVERIFY(!proxy.transparentReadiness().has_value());
+        };
+
+        ProxyOptions options;
+        options.transparentRedirect = true;
+        options.allowedClientIp = valid.clientIp;
+        auto explicitProxy = valid;
+        explicitProxy.explicitProxy = true;
+        assertRejected(explicitProxy, options);
+
+        auto wrongBind = options;
+        wrongBind.listenAddress = QStringLiteral("127.0.0.2");
+        assertRejected(valid, wrongBind);
+
+        auto wrongClient = options;
+        wrongClient.allowedClientIp = QStringLiteral("192.0.2.11");
+        assertRejected(valid, wrongClient);
+
+        auto wrongInterface = valid;
+        wrongInterface.interfaceName = QStringLiteral("no_such_test_interface");
+        assertRejected(wrongInterface, options);
+
+        auto invalidUpstream = valid;
+        invalidUpstream.serverIp = QStringLiteral("not-an-ip");
+        assertRejected(invalidUpstream, options);
+    }
+
+    void transparentRedirectRejectsSocketPeerOutsideConfiguredClientAllowlist() {
+        const auto selected = activeNonLoopbackIPv4();
+        if (!selected)
+            QSKIP("A selected active interface is required for transparent readiness");
+        if (!loopbackListenerAvailable())
+            QSKIP("This environment does not permit local loopback listeners");
+
+        SessionConfig config{selected->first, "192.0.2.10",      "192.0.2.30",
+                             18081,           {"/api/generate"}, false};
+        ProxyOptions options;
+        options.transparentRedirect = true;
+        options.allowedClientIp = config.clientIp;
+        ProxyServer proxy;
+        QVERIFY(proxy.start(config, options));
+
+        QTcpSocket client;
+        if (!client.bind(QHostAddress::LocalHost))
+            QSKIP("This host cannot bind a local test client to loopback");
+        QSignalSpy connected(&client, &QTcpSocket::connected);
+        client.connectToHost(QHostAddress::LocalHost, proxy.listenPort());
+        QTRY_VERIFY_WITH_TIMEOUT(
+            connected.count() > 0 || client.state() == QAbstractSocket::UnconnectedState, 3000);
+        if (connected.isEmpty())
+            QSKIP("This host cannot complete a loopback connection for the peer rejection test");
+        client.write(request("{\"model\":\"synthetic\",\"prompt\":\"denied\"}"));
+        QTRY_COMPARE_WITH_TIMEOUT(client.state(), QAbstractSocket::UnconnectedState, 3000);
+        QTest::qWait(50);
+        QVERIFY(proxy.history().empty());
+        proxy.stop();
+    }
+
     void exactBodyAndConfiguredDestination() {
         MockOllama mock;
         ProxyServer proxy;

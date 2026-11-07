@@ -1,16 +1,21 @@
 #include "network/LeasedHelperHost.hpp"
+#include "network/LeasedUnixHelperCommandListener.hpp"
 #include "network/PfAnchorOperations.hpp"
 #include "network/PfRecoveryJournal.hpp"
 #include "network/UnixPeerCredentials.hpp"
 
 #include <QCoreApplication>
+#include <QDir>
 #include <QEvent>
+#include <QFileInfo>
 #include <QTemporaryDir>
 #include <QtTest>
 
+#include <cstring>
 #include <fcntl.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/un.h>
 #include <thread>
 #include <unistd.h>
 
@@ -147,7 +152,7 @@ class HelperHostFakeCleanupVerifier final : public PfAnchorCleanupVerifier {
 
 class HelperHostPrivateDirectory {
   public:
-    HelperHostPrivateDirectory() {
+    HelperHostPrivateDirectory() : directory_(QStringLiteral("/tmp/m6-helper-XXXXXX")) {
         if (!directory_.isValid())
             return;
         const QByteArray path = directory_.path().toLocal8Bit();
@@ -161,6 +166,7 @@ class HelperHostPrivateDirectory {
     }
     bool valid() const { return directory_.isValid() && descriptor_ >= 0; }
     int fd() const { return descriptor_; }
+    QString path() const { return directory_.path(); }
 
   private:
     QTemporaryDir directory_;
@@ -249,6 +255,66 @@ class M6LeasedHelperHostTests final : public QObject {
                 qFatal("Cannot write synthetic helper command");
             offset += static_cast<qsizetype>(count);
         }
+    }
+    static int connectUnixSocket(const QString &path) {
+        const int fd = ::socket(AF_UNIX, SOCK_STREAM, 0);
+        if (fd < 0)
+            return -1;
+        sockaddr_un address{};
+        address.sun_family = AF_UNIX;
+        const QByteArray encoded = QFile::encodeName(path);
+        if (encoded.size() >= static_cast<qsizetype>(sizeof(address.sun_path))) {
+            ::close(fd);
+            return -1;
+        }
+        std::memcpy(address.sun_path, encoded.constData(), static_cast<size_t>(encoded.size()));
+        address.sun_path[encoded.size()] = '\0';
+        if (::connect(fd, reinterpret_cast<const sockaddr *>(&address), sizeof(address)) != 0) {
+            ::close(fd);
+            return -1;
+        }
+        return fd;
+    }
+    static bool pathnameUnixSocketsAvailable(const QString &directory) {
+        const QString probePath = directory + QStringLiteral("/.m6_unix_bind_probe");
+        const QByteArray encoded = QFile::encodeName(probePath);
+        const int fd = ::socket(AF_UNIX, SOCK_STREAM, 0);
+        if (fd < 0)
+            return false;
+        sockaddr_un address{};
+        address.sun_family = AF_UNIX;
+        if (encoded.size() >= static_cast<qsizetype>(sizeof(address.sun_path))) {
+            ::close(fd);
+            return false;
+        }
+        std::memcpy(address.sun_path, encoded.constData(), static_cast<size_t>(encoded.size()));
+        address.sun_path[encoded.size()] = '\0';
+        const bool bound =
+            ::bind(fd, reinterpret_cast<const sockaddr *>(&address), sizeof(address)) == 0;
+        if (bound)
+            (void)::unlink(encoded.constData());
+        ::close(fd);
+        return bound;
+    }
+    static QByteArray listenerTransaction(LeasedUnixHelperCommandListener &listener,
+                                          const QString &path, const QByteArray &wire,
+                                          HelperListenerServeResult *served) {
+        const int client = connectUnixSocket(path);
+        if (client < 0)
+            return {};
+        writeAll(client, wire);
+        if (::shutdown(client, SHUT_WR) != 0) {
+            ::close(client);
+            return {};
+        }
+        *served = listener.serveOne(100);
+        QByteArray response;
+        char buffer[8];
+        ssize_t count = 0;
+        while ((count = ::read(client, buffer, sizeof(buffer))) > 0)
+            response.append(buffer, static_cast<qsizetype>(count));
+        ::close(client);
+        return response;
     }
     static bool dispatchWire(LeasedHelperHost &host, const QByteArray &wire, QByteArray *response,
                              bool *fileDescriptorsRemainOpen, QString *error = nullptr) {
@@ -587,6 +653,226 @@ class M6LeasedHelperHostTests final : public QObject {
         QCOMPARE(deps.recoveryJournal.read().status, PfRecoveryJournalStatus::JournalMissing);
         auto afterOwnerCleanup = HostSessionLease::acquire(directory.fd());
         QVERIFY(afterOwnerCleanup.acquired());
+    }
+
+    void unixListenerRequiresActiveHostAndMatchingDirectory() {
+        HelperHostPrivateDirectory directory;
+        QVERIFY(directory.valid());
+        Dependencies deps(directory.fd());
+        QVERIFY(deps.recoveryJournal.valid());
+        bool current = true;
+        auto proxyReadiness = readiness(&current);
+        QString error;
+        auto host = LeasedHelperHost::create(
+            directory.fd(), sessionConfig(), facts(), proxyReadiness, kernelPeer(),
+            operationsFactory(deps.backend, deps.coordinator), [] { return qint64(100); }, &error);
+        QVERIFY2(host, qPrintable(error));
+        const QString path = directory.path() + QLatin1Char('/') +
+                             QString::fromLatin1(LeasedUnixHelperCommandListener::socketBasename);
+        auto inactive =
+            LeasedUnixHelperCommandListener::create(path, directory.fd(), *host, &error);
+        QVERIFY(!inactive);
+        QCOMPARE(error, QStringLiteral("active_helper_host_required"));
+        QVERIFY(!QFileInfo::exists(path));
+
+        QVERIFY(host->start(&error));
+        QTemporaryDir other;
+        QVERIFY(other.isValid());
+        QVERIFY(::chmod(QFile::encodeName(other.path()).constData(), 0700) == 0);
+        const int otherFd =
+            ::open(QFile::encodeName(other.path()).constData(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+        QVERIFY(otherFd >= 0);
+        auto wrongParent = LeasedUnixHelperCommandListener::create(path, otherFd, *host, &error);
+        ::close(otherFd);
+        QVERIFY(!wrongParent);
+        QCOMPARE(error, QStringLiteral("socket_parent_directory_mismatch"));
+        QVERIFY(!QFileInfo::exists(path));
+        QCOMPARE(host->state(), NetworkSession::State::Idle);
+        QVERIFY(deps.backend.calls.contains(QStringLiteral("release-session-lease:session-lease")));
+    }
+
+    void unixListenerHandlesHeartbeatAndStopWithPrivateSocketAndCleanup() {
+        HelperHostPrivateDirectory directory;
+        QVERIFY(directory.valid());
+        if (!pathnameUnixSocketsAvailable(directory.path()))
+            QSKIP("AF_UNIX pathname bind is unavailable in this environment");
+        Dependencies deps(directory.fd());
+        QVERIFY(deps.recoveryJournal.valid());
+        bool current = true;
+        auto proxyReadiness = readiness(&current);
+        QString error;
+        auto host = LeasedHelperHost::create(
+            directory.fd(), sessionConfig(), facts(), proxyReadiness, kernelPeer(),
+            operationsFactory(deps.backend, deps.coordinator), [] { return qint64(100); }, &error);
+        QVERIFY2(host, qPrintable(error));
+        QVERIFY2(host->start(&error), qPrintable(error));
+        auto credentials = host->takeCredentials();
+        QVERIFY(credentials.has_value());
+
+        const QString path = directory.path() + QLatin1Char('/') +
+                             QString::fromLatin1(LeasedUnixHelperCommandListener::socketBasename);
+        auto listener =
+            LeasedUnixHelperCommandListener::create(path, directory.fd(), *host, &error);
+        QVERIFY2(listener, qPrintable(error));
+        struct stat socketInfo{};
+        QVERIFY(::lstat(QFile::encodeName(path).constData(), &socketInfo) == 0);
+        QVERIFY(S_ISSOCK(socketInfo.st_mode));
+        QCOMPARE(socketInfo.st_uid, ::geteuid());
+        QCOMPARE(socketInfo.st_mode & 07777, mode_t(0600));
+
+        HelperListenerServeResult served;
+        auto heartbeat = wireCommand(1, credentials->capability(), host->snapshot().anchor());
+        QCOMPARE(listenerTransaction(*listener, path, heartbeat, &served), QByteArray(1, char(1)));
+        QCOMPARE(served.status, HelperListenerServeStatus::RequestHandled);
+        QCOMPARE(host->state(), NetworkSession::State::Active);
+        auto stop = wireCommand(2, credentials->capability(), host->snapshot().anchor());
+        QVERIFY(::chmod(QFile::encodeName(path).constData(), 0644) == 0);
+        deps.backend.sessionLeaseReleaseSucceeds = false;
+        QCOMPARE(listenerTransaction(*listener, path, stop, &served), QByteArray(1, char(0)));
+        QCOMPARE(served.status, HelperListenerServeStatus::RequestRejected);
+        QCOMPARE(host->state(), NetworkSession::State::CleanupPending);
+        QVERIFY(listener->isListening());
+        QVERIFY(QFileInfo::exists(path));
+
+        deps.backend.sessionLeaseReleaseSucceeds = true;
+        QCOMPARE(listenerTransaction(*listener, path, stop, &served), QByteArray(1, char(1)));
+        QCOMPARE(served.status, HelperListenerServeStatus::RequestHandled);
+        QCOMPARE(host->state(), NetworkSession::State::Idle);
+        QVERIFY(!listener->isListening());
+        QVERIFY(listener->serveOne(0).status == HelperListenerServeStatus::ListenerUnavailable);
+        QVERIFY(!QFileInfo::exists(path));
+
+        listener.reset();
+        QVERIFY(::lstat(QFile::encodeName(path).constData(), &socketInfo) != 0);
+    }
+
+    void unixListenerRejectsMalformedAndUnauthorizedThenServesNextClient() {
+        HelperHostPrivateDirectory directory;
+        QVERIFY(directory.valid());
+        if (!pathnameUnixSocketsAvailable(directory.path()))
+            QSKIP("AF_UNIX pathname bind is unavailable in this environment");
+        Dependencies deps(directory.fd());
+        QVERIFY(deps.recoveryJournal.valid());
+        bool current = true;
+        auto proxyReadiness = readiness(&current);
+        QString error;
+        auto host = LeasedHelperHost::create(
+            directory.fd(), sessionConfig(), facts(), proxyReadiness, kernelPeer(),
+            operationsFactory(deps.backend, deps.coordinator), [] { return qint64(100); }, &error);
+        QVERIFY(host);
+        QVERIFY(host->start(&error));
+        auto credentials = host->takeCredentials();
+        QVERIFY(credentials.has_value());
+        const QString path = directory.path() + QLatin1Char('/') +
+                             QString::fromLatin1(LeasedUnixHelperCommandListener::socketBasename);
+        auto listener =
+            LeasedUnixHelperCommandListener::create(path, directory.fd(), *host, &error);
+        QVERIFY2(listener, qPrintable(error));
+        HelperListenerServeResult served;
+
+        QCOMPARE(listenerTransaction(*listener, path, QByteArray::fromHex("00000000"), &served),
+                 QByteArray(1, char(0)));
+        QCOMPARE(served.status, HelperListenerServeStatus::RequestRejected);
+        QByteArray wrongCapability = credentials->capability();
+        wrongCapability[0] = static_cast<char>(wrongCapability[0] ^ 0x01);
+        auto unauthorized = wireCommand(1, wrongCapability, host->snapshot().anchor());
+        QCOMPARE(listenerTransaction(*listener, path, unauthorized, &served),
+                 QByteArray(1, char(0)));
+        QCOMPARE(served.status, HelperListenerServeStatus::RequestRejected);
+
+        auto heartbeat = wireCommand(1, credentials->capability(), host->snapshot().anchor());
+        QCOMPARE(listenerTransaction(*listener, path, heartbeat, &served), QByteArray(1, char(1)));
+        QCOMPARE(served.status, HelperListenerServeStatus::RequestHandled);
+    }
+
+    void unixListenerBoundsWaitsRejectsWrongThreadAndProtectsReplacedPath() {
+        HelperHostPrivateDirectory directory;
+        QVERIFY(directory.valid());
+        if (!pathnameUnixSocketsAvailable(directory.path()))
+            QSKIP("AF_UNIX pathname bind is unavailable in this environment");
+        Dependencies deps(directory.fd());
+        QVERIFY(deps.recoveryJournal.valid());
+        bool current = true;
+        auto proxyReadiness = readiness(&current);
+        QString error;
+        auto host = LeasedHelperHost::create(
+            directory.fd(), sessionConfig(), facts(), proxyReadiness, kernelPeer(),
+            operationsFactory(deps.backend, deps.coordinator), [] { return qint64(100); }, &error);
+        QVERIFY(host);
+        QVERIFY(host->start(&error));
+        const QString path = directory.path() + QLatin1Char('/') +
+                             QString::fromLatin1(LeasedUnixHelperCommandListener::socketBasename);
+        auto listener =
+            LeasedUnixHelperCommandListener::create(path, directory.fd(), *host, &error);
+        QVERIFY2(listener, qPrintable(error));
+        QCOMPARE(listener->serveOne(20).status, HelperListenerServeStatus::TimedOut);
+        QCOMPARE(listener->serveOne(1001).status, HelperListenerServeStatus::Failed);
+        HelperListenerServeStatus threadResult = HelperListenerServeStatus::RequestHandled;
+        std::thread worker([&] { threadResult = listener->serveOne(0).status; });
+        worker.join();
+        QCOMPARE(threadResult, HelperListenerServeStatus::Failed);
+        QVERIFY(listener->isListening());
+
+        const QByteArray nativePath = QFile::encodeName(path);
+        QVERIFY(::unlink(nativePath.constData()) == 0);
+        const int replacement =
+            ::open(nativePath.constData(), O_CREAT | O_EXCL | O_WRONLY | O_CLOEXEC, 0600);
+        QVERIFY(replacement >= 0);
+        ::close(replacement);
+        listener.reset();
+        struct stat info{};
+        QVERIFY(::lstat(nativePath.constData(), &info) == 0);
+        QVERIFY(S_ISREG(info.st_mode));
+    }
+
+    void unixListenerPreservesExistingPathAndAcceptsCanonicalParentAlias() {
+        HelperHostPrivateDirectory directory;
+        QVERIFY(directory.valid());
+        if (!pathnameUnixSocketsAvailable(directory.path()))
+            QSKIP("AF_UNIX pathname bind is unavailable in this environment");
+        Dependencies deps(directory.fd());
+        QVERIFY(deps.recoveryJournal.valid());
+        bool current = true;
+        auto proxyReadiness = readiness(&current);
+        QString error;
+        auto host = LeasedHelperHost::create(
+            directory.fd(), sessionConfig(), facts(), proxyReadiness, kernelPeer(),
+            operationsFactory(deps.backend, deps.coordinator), [] { return qint64(100); }, &error);
+        QVERIFY(host);
+        QVERIFY(host->start(&error));
+        const QString path = directory.path() + QLatin1Char('/') +
+                             QString::fromLatin1(LeasedUnixHelperCommandListener::socketBasename);
+        const QByteArray nativePath = QFile::encodeName(path);
+        const QByteArray alias = QFile::encodeName(directory.path() + QStringLiteral("-alias"));
+        QVERIFY(::symlink(QFile::encodeName(directory.path()).constData(), alias.constData()) == 0);
+        auto listener = LeasedUnixHelperCommandListener::create(
+            QString::fromLocal8Bit(alias + '/' + LeasedUnixHelperCommandListener::socketBasename),
+            directory.fd(), *host, &error);
+        QVERIFY2(listener, qPrintable(error));
+        QCOMPARE(listener->socketPath(),
+                 QDir(directory.path()).canonicalPath() + QLatin1Char('/') +
+                     QString::fromLatin1(LeasedUnixHelperCommandListener::socketBasename));
+        listener.reset();
+        QVERIFY(::access(nativePath.constData(), F_OK) != 0);
+        QVERIFY(::unlink(alias.constData()) == 0);
+
+        const int existing =
+            ::open(nativePath.constData(), O_CREAT | O_EXCL | O_WRONLY | O_CLOEXEC, 0600);
+        QVERIFY(existing >= 0);
+        QCOMPARE(::write(existing, "x", 1), ssize_t(1));
+        ::close(existing);
+        auto collision =
+            LeasedUnixHelperCommandListener::create(path, directory.fd(), *host, &error);
+        QVERIFY(!collision);
+        QCOMPARE(error, QStringLiteral("socket_path_already_exists"));
+        QCOMPARE(host->state(), NetworkSession::State::Idle);
+        QVERIFY(deps.backend.calls.contains(QStringLiteral("release-session-lease:session-lease")));
+        const int preserved = ::open(nativePath.constData(), O_RDONLY | O_CLOEXEC);
+        QVERIFY(preserved >= 0);
+        char preservedByte = 0;
+        QCOMPARE(::read(preserved, &preservedByte, 1), ssize_t(1));
+        QCOMPARE(preservedByte, 'x');
+        ::close(preserved);
     }
 };
 

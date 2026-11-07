@@ -79,7 +79,7 @@ std::optional<SessionSnapshot> SessionSnapshot::create(const SessionConfig &conf
                                                        const NetworkFacts &facts,
                                                        const TransparentProxyReadiness &readiness,
                                                        const QString &sessionId, QString *error) {
-    if (readiness.interfaceName() != config.interfaceName ||
+    if (!readiness.isCurrent() || readiness.interfaceName() != config.interfaceName ||
         readiness.listenAddress() != QStringLiteral("127.0.0.1") || readiness.listenerPort() < 1 ||
         readiness.listenerPort() > 65535 || readiness.allowedClientIp() != config.clientIp ||
         readiness.upstreamServerIp() != config.serverIp ||

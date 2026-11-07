@@ -1,6 +1,7 @@
 #pragma once
 #include <QString>
 #include <QStringList>
+#include <functional>
 #include <utility>
 namespace interceptor {
 struct SessionConfig {
@@ -25,6 +26,13 @@ class TransparentProxyReadiness {
     const QString &upstreamServerIp() const { return upstreamServerIp_; }
     int listenerPort() const { return listenerPort_; }
     int upstreamServerPort() const { return upstreamServerPort_; }
+    bool isCurrent() const {
+        try {
+            return currentCheck_ && currentCheck_();
+        } catch (...) {
+            return false;
+        }
+    }
 
   private:
     TransparentProxyReadiness(QString interfaceName, QString listenAddress, QString allowedClientIp,
@@ -40,6 +48,8 @@ class TransparentProxyReadiness {
     QString upstreamServerIp_;
     int listenerPort_ = 0;
     int upstreamServerPort_ = 0;
+    std::function<bool()> currentCheck_;
     friend class ProxyServer;
+    friend class M6LeasedHelperHostTests;
 };
 } // namespace interceptor

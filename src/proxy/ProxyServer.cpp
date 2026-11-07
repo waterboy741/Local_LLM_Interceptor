@@ -760,9 +760,15 @@ bool ProxyServer::start(const SessionConfig &config, const ProxyOptions &options
         return false;
     }
     if (options.transparentRedirect) {
-        impl_->transparentReadiness = TransparentProxyReadiness{
-            config.interfaceName, impl_->boundAddress,           options.allowedClientIp,
-            config.serverIp,      static_cast<int>(impl_->port), config.serverPort};
+        TransparentProxyReadiness readiness{config.interfaceName,          impl_->boundAddress,
+                                            options.allowedClientIp,       config.serverIp,
+                                            static_cast<int>(impl_->port), config.serverPort};
+        const auto fingerprint = readiness;
+        const QPointer<ProxyServer> owner(this);
+        readiness.currentCheck_ = [owner, fingerprint] {
+            return owner && owner->isTransparentReadinessCurrent(fingerprint);
+        };
+        impl_->transparentReadiness = std::move(readiness);
     }
     return true;
 }
@@ -793,7 +799,6 @@ std::optional<TransparentProxyReadiness> ProxyServer::transparentReadiness() con
     return impl_->transparentReadiness;
 }
 bool ProxyServer::isTransparentReadinessCurrent(const TransparentProxyReadiness &readiness) const {
-    Q_ASSERT(QThread::currentThread() == thread());
     if (QThread::currentThread() != thread())
         return false;
     if (!impl_ || !impl_->engine || !impl_->transparentReadiness)

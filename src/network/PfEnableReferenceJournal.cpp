@@ -304,6 +304,31 @@ PfEnableReferenceJournal::persistAcquirePending(const QString &sessionId) const 
         serialize(owner, PfEnableReferenceJournalPhase::AcquirePending, std::nullopt));
 }
 
+PfEnableReferenceJournalStatus PfEnableReferenceJournal::clearNeverStartedAcquire(
+    const QString &sessionId, const PfEnableReferenceAcquireNotStartedReceipt &) const {
+    if (!valid())
+        return PfEnableReferenceJournalStatus::InvalidDirectory;
+    QByteArray owner;
+    if (!validOwner(sessionId, &owner))
+        return PfEnableReferenceJournalStatus::InvalidOwner;
+    const auto guard = lockDirectory(directoryFd_);
+    if (guard.fd() < 0)
+        return PfEnableReferenceJournalStatus::LockFailed;
+    const auto existing = readUnlocked(directoryFd_);
+    if (existing.status != PfEnableReferenceJournalStatus::Present || !existing.record)
+        return existing.status;
+    if (existing.record->sessionId != sessionId)
+        return PfEnableReferenceJournalStatus::OwnerConflict;
+    if (existing.record->phase != PfEnableReferenceJournalPhase::AcquirePending ||
+        existing.record->token)
+        return PfEnableReferenceJournalStatus::InvalidTransition;
+    if (fileOps_->unlinkAt(directoryFd_, journalName) < 0)
+        return PfEnableReferenceJournalStatus::IoFailed;
+    if (fileOps_->syncDirectory(directoryFd_) < 0)
+        return PfEnableReferenceJournalStatus::DurabilityUncertain;
+    return PfEnableReferenceJournalStatus::Cleared;
+}
+
 PfEnableReferenceJournalStatus
 PfEnableReferenceJournal::markAcquisitionUncertain(const QString &sessionId,
                                                    std::optional<quint64> token) const {

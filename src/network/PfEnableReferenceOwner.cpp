@@ -85,7 +85,12 @@ PfEnableReferenceResult PfEnableReferenceOwner::acquire() {
 
     if (!result.started) {
         state_ = PfEnableReferenceState::Unacquired;
-        return {false, false, commandStatus(result.status), std::nullopt, std::nullopt};
+        return {false,
+                false,
+                commandStatus(result.status),
+                std::nullopt,
+                PfEnableReferenceAcquireNotStartedReceipt{},
+                std::nullopt};
     }
     const auto parsedToken = parseTokenOutput(result.standardOutput);
     if (parsedToken) {
@@ -136,8 +141,8 @@ PfEnableReferenceResult PfEnableReferenceOwner::release() {
     if (completed(result)) {
         state_ = PfEnableReferenceState::Released;
         token_.reset();
-        return {true, false, QStringLiteral("released"), std::nullopt,
-                PfEnableReferenceReleaseReceipt(*token)};
+        return {true,         false,        QStringLiteral("released"),
+                std::nullopt, std::nullopt, PfEnableReferenceReleaseReceipt(*token)};
     }
     return {false, true,
             QStringLiteral("release_uncertain") + QStringLiteral("_") +

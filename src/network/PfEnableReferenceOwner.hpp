@@ -4,6 +4,7 @@
 #include <QString>
 #include <QStringList>
 #include <optional>
+#include <utility>
 
 namespace interceptor {
 
@@ -38,6 +39,12 @@ struct PfEnableReferenceCommandResult {
     QByteArray standardOutput;
 };
 
+class PfEnableReferenceAcquireNotStartedReceipt {
+  private:
+    PfEnableReferenceAcquireNotStartedReceipt() = default;
+    friend class PfEnableReferenceOwner;
+};
+
 class PfEnableReferenceReleaseReceipt {
   public:
     quint64 token() const { return token_; }
@@ -69,7 +76,17 @@ struct PfEnableReferenceResult {
     bool cleanupPending = false;
     QString statusCode;
     std::optional<quint64> token;
+    std::optional<PfEnableReferenceAcquireNotStartedReceipt> acquireNotStartedReceipt;
     std::optional<PfEnableReferenceReleaseReceipt> releaseReceipt;
+
+    PfEnableReferenceResult(
+        bool succeeded = false, bool pending = false, QString status = {},
+        std::optional<quint64> ownedToken = std::nullopt,
+        std::optional<PfEnableReferenceAcquireNotStartedReceipt> notStarted = std::nullopt,
+        std::optional<PfEnableReferenceReleaseReceipt> released = std::nullopt)
+        : success(succeeded), cleanupPending(pending), statusCode(std::move(status)),
+          token(ownedToken), acquireNotStartedReceipt(std::move(notStarted)),
+          releaseReceipt(std::move(released)) {}
 };
 
 class PfEnableReferenceOwner {

@@ -79,6 +79,9 @@ class PfEnableReferenceJournal final {
     PfEnableReferenceJournalReadResult read() const;
     PfEnableReferenceJournalStatus persistAcquirePending(const QString &sessionId) const;
     PfEnableReferenceJournalStatus
+    clearNeverStartedAcquire(const QString &sessionId,
+                             const PfEnableReferenceAcquireNotStartedReceipt &receipt) const;
+    PfEnableReferenceJournalStatus
     markAcquisitionUncertain(const QString &sessionId,
                              std::optional<quint64> token = std::nullopt) const;
     PfEnableReferenceJournalStatus persistCapturedToken(const QString &sessionId,

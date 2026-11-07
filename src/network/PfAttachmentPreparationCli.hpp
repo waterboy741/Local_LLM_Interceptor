@@ -35,6 +35,8 @@ class PfAttachmentPreparationCli {
     static PfAttachmentPreparationResult run(const QStringList &arguments);
     static PfAttachmentPreparationResult run(const QStringList &arguments,
                                              PfSyntaxCheckRunner &runner);
+    // Runs only `/sbin/pfctl -n -f -` on macOS; never loads the supplied rules.
+    static PfSyntaxCheckStatus checkWithSystemPfctl(const QByteArray &rules);
 };
 
 } // namespace interceptor

@@ -170,6 +170,16 @@ PfAttachmentPreparationResult PfAttachmentPreparationCli::run(const QStringList 
 #endif
 }
 
+PfSyntaxCheckStatus PfAttachmentPreparationCli::checkWithSystemPfctl(const QByteArray &rules) {
+#if defined(Q_OS_MACOS)
+    SystemPfSyntaxCheckRunner runner;
+    return runner.check(rules);
+#else
+    Q_UNUSED(rules);
+    return PfSyntaxCheckStatus::UnsupportedPlatform;
+#endif
+}
+
 PfAttachmentPreparationResult PfAttachmentPreparationCli::run(const QStringList &arguments,
                                                               PfSyntaxCheckRunner &runner) {
     const auto parsed = parseArguments(arguments);

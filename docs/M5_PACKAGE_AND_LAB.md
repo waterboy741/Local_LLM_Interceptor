@@ -96,6 +96,18 @@ cat "$TMPDIR/llm_interceptor_attachment.pf"
 
 The two references are deliberately ordered with translation first for PF syntax. When an administrator reviews a future system configuration change, place the `rdr-anchor` directive in the translation section and the `anchor` directive in the filter section, before that section's rules; do not append both after the existing filter section. Preserve every existing rule and all `com.apple/*` anchors. The fragment is an insertion-point proposal, not an active attachment or complete `pf.conf`; isolated syntax success does not prove effective placement, runtime evaluation, listener delivery, or a working proxy path. Current reported PF status is disabled, and this tool does not enable it.
 
+### Merge supplied PF configuration for review
+
+`pf_attachment_merge` reads supplied `pf.conf` text from standard input, bounded to 1 MiB. It requires exactly one active stock `rdr-anchor "com.apple/*"` translation marker followed by exactly one active stock `anchor "com.apple/*"` filter marker. It inserts `rdr-anchor "llm_interceptor/*"` before the translation marker and `anchor "llm_interceptor/*"` before the filter marker. It fails closed for missing or duplicate markers, reversed marker order, mixed line endings, active line continuations, or any active `llm_interceptor` namespace text. Comment-only mentions are ignored; comments, quoted `#` characters, line endings, and every other original byte are preserved.
+
+The command runs only `/sbin/pfctl -n -f -` on the merged candidate. It emits the full candidate to stdout only after syntax succeeds; stderr contains sanitized status and never echoes the supplied configuration or PF diagnostics. It does not load rules, enable PF, write a file, or edit `/etc/pf.conf`. Redirect successful stdout to a new local review file and inspect the full diff before any separately authorized administrator action:
+
+```sh
+./build/debug/pf_attachment_merge < /etc/pf.conf > "$TMPDIR/pf.conf.llm-interceptor-review"
+```
+
+The merge preserves existing `com.apple/*` references and unrelated rules byte for byte. Syntax success applies only to the supplied snapshot; it does not prove effective placement, runtime PF evaluation, packet delivery, reverse translation, or proxy readiness. The currently reported host PF status remains disabled.
+
 ```sh
 ./build/debug/pf_readiness --timeout-ms 3000
 ```

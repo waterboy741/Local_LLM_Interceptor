@@ -57,6 +57,7 @@ PfEnableReferenceRecoveryCoordinator::acquire(const QString &sessionId) {
     }
     tokenJournalDurable_ = true;
     result.success = true;
+    result.token = operation.token;
     result.statusCode = "acquired_token_durable";
     return result;
 }
@@ -220,8 +221,9 @@ PfEnableReferenceRecoveryCoordinator::recoverRelease(const QString &sessionId) {
             journal_.clearAfterVerifiedAbsence(sessionId, *record.token, verifier_);
         result.success = result.journalStatus == PfEnableReferenceJournalStatus::Cleared;
         result.cleanupPending = !result.success;
-        result.statusCode = result.success ? QStringLiteral("recovered_token_already_absent")
-                                           : PfEnableReferenceJournal::statusName(result.journalStatus);
+        result.statusCode = result.success
+                                ? QStringLiteral("recovered_token_already_absent")
+                                : PfEnableReferenceJournal::statusName(result.journalStatus);
         return result;
     }
     if (record.phase == PfEnableReferenceJournalPhase::ReleasePending) {
@@ -260,8 +262,9 @@ PfEnableReferenceRecoveryCoordinator::recoverRelease(const QString &sessionId) {
             journal_.clearAfterVerifiedAbsence(sessionId, *record.token, verifier_);
         result.success = result.journalStatus == PfEnableReferenceJournalStatus::Cleared;
         result.cleanupPending = !result.success;
-        result.statusCode = result.success ? QStringLiteral("recovered_token_already_absent")
-                                           : PfEnableReferenceJournal::statusName(result.journalStatus);
+        result.statusCode = result.success
+                                ? QStringLiteral("recovered_token_already_absent")
+                                : PfEnableReferenceJournal::statusName(result.journalStatus);
         return result;
     }
     if (postPersistState != PfEnableReferenceTokenState::Active) {
@@ -288,18 +291,40 @@ PfEnableReferenceRecoveryCoordinator::recoverRelease(const QString &sessionId) {
     }
     result.operationStatus = operation.statusCode;
     if (!operation.success || !operation.releaseReceipt) {
-        result.statusCode = operation.statusCode.isEmpty() ? QStringLiteral("recovery_release_uncertain")
-                                                           : operation.statusCode;
+        result.statusCode = operation.statusCode.isEmpty()
+                                ? QStringLiteral("recovery_release_uncertain")
+                                : operation.statusCode;
         result.cleanupPending = true;
         return result;
     }
-    result.journalStatus = journal_.clearAfterVerifiedRelease(
-        sessionId, *operation.releaseReceipt, verifier_);
+    result.journalStatus =
+        journal_.clearAfterVerifiedRelease(sessionId, *operation.releaseReceipt, verifier_);
     result.success = result.journalStatus == PfEnableReferenceJournalStatus::Cleared;
     result.cleanupPending = !result.success;
     result.statusCode = result.success ? QStringLiteral("recovered_reference_released")
                                        : PfEnableReferenceJournal::statusName(result.journalStatus);
     return result;
+}
+
+PfEnableReferenceRecoveryResult PfEnableReferenceRecoveryCoordinator::recoverPendingRelease() {
+    const auto read = journal_.read();
+    if (read.status != PfEnableReferenceJournalStatus::Present || !read.record) {
+        PfEnableReferenceRecoveryResult result;
+        result.journalStatus = read.status;
+        result.statusCode = read.status == PfEnableReferenceJournalStatus::Missing
+                                ? QStringLiteral("recovery_journal_missing")
+                                : QStringLiteral("recovery_journal_unavailable");
+        result.cleanupPending = read.status != PfEnableReferenceJournalStatus::Missing;
+        return result;
+    }
+    if (read.record->phase == PfEnableReferenceJournalPhase::ReleaseNeeded) {
+        PfEnableReferenceRecoveryResult result;
+        result.journalStatus = PfEnableReferenceJournalStatus::Present;
+        result.statusCode = "release_needed_requires_anchor_cleanup";
+        result.cleanupPending = true;
+        return result;
+    }
+    return recoverRelease(read.record->sessionId);
 }
 
 } // namespace interceptor

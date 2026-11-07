@@ -150,6 +150,14 @@ add_test(NAME m6_pf_anchor_recovery_system_operations
     COMMAND m6_pf_anchor_recovery_system_operations_tests)
 set_tests_properties(m6_pf_anchor_recovery_system_operations PROPERTIES TIMEOUT 30)
 
+qt_add_executable(m6_pf_enable_reference_system_operations_tests
+    M6PfEnableReferenceSystemOperationsTests.cpp)
+target_link_libraries(m6_pf_enable_reference_system_operations_tests PRIVATE
+    interceptor_network Qt6::Test)
+add_test(NAME m6_pf_enable_reference_system_operations
+    COMMAND m6_pf_enable_reference_system_operations_tests)
+set_tests_properties(m6_pf_enable_reference_system_operations PROPERTIES TIMEOUT 30)
+
 qt_add_executable(m6_pf_anchor_cleanup_verifier_tests M6PfAnchorCleanupVerifierTests.cpp)
 target_link_libraries(m6_pf_anchor_cleanup_verifier_tests PRIVATE interceptor_network Qt6::Test)
 add_test(NAME m6_pf_anchor_cleanup_verifier COMMAND m6_pf_anchor_cleanup_verifier_tests)

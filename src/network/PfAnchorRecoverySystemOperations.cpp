@@ -6,8 +6,12 @@ namespace interceptor {
 
 PfAnchorRecoverySystemOperations::PfAnchorRecoverySystemOperations(
     SystemOperations &delegate, const HostSessionLease &hostLease,
-    PfAnchorRecoveryCoordinator &coordinator)
+    PfAnchorRecoveryCoordinator &coordinator,
+    PfEnableReferenceRecoveryCoordinator *pfReferenceCoordinator,
+    PfEnableReferenceRecoveryCoordinator *startupRecoveryCoordinator)
     : delegate_(delegate), hostLease_(hostLease), coordinator_(coordinator),
+      pfReferenceCoordinator_(pfReferenceCoordinator),
+      startupRecoveryCoordinator_(startupRecoveryCoordinator),
       ownerThreadId_(QThread::currentThreadId()) {}
 
 bool PfAnchorRecoverySystemOperations::ownerThread() const noexcept {
@@ -64,16 +68,28 @@ std::optional<QString>
 PfAnchorRecoverySystemOperations::acquireSessionLease(const SessionSnapshot &snapshot) {
     if (!ownerThread() || !hostLease_.acquired() || leaseToken_)
         return std::nullopt;
+    if (startupRecoveryCoordinator_) {
+        if (!pfReferenceCoordinator_ || startupRecoveryCoordinator_ == pfReferenceCoordinator_ ||
+            startupRecoveryCoordinator_->sharesOwnerWith(*pfReferenceCoordinator_))
+            return std::nullopt;
+        if (!startupRecoveryCoordinator_->sharesJournalWith(*pfReferenceCoordinator_))
+            return std::nullopt;
+        const auto recovery = startupRecoveryCoordinator_->recoverPendingRelease();
+        if (!recovery.success && recovery.statusCode != QStringLiteral("recovery_journal_missing"))
+            return std::nullopt;
+    }
     auto token = delegate_.acquireSessionLease(snapshot);
     if (!token || token->isEmpty())
         return std::nullopt;
     leaseToken_ = *token;
     sessionSnapshot_ = snapshot;
+    anchorCleanupVerified_ = false;
     return token;
 }
 
 bool PfAnchorRecoverySystemOperations::releaseSessionLease(const QString &token) {
-    if (!activeSession() || !leaseToken_ || token != *leaseToken_)
+    if (!activeSession() || !leaseToken_ || token != *leaseToken_ || pfReferencePending_ ||
+        pfReferenceToken_)
         return false;
     if (!delegate_.releaseSessionLease(token))
         return false;
@@ -83,15 +99,56 @@ bool PfAnchorRecoverySystemOperations::releaseSessionLease(const QString &token)
 }
 
 std::optional<QString> PfAnchorRecoverySystemOperations::acquirePfReference() {
-    return activeSession() ? delegate_.acquirePfReference() : std::nullopt;
+    if (!activeSession())
+        return std::nullopt;
+    if (!pfReferenceCoordinator_)
+        return delegate_.acquirePfReference();
+    if (pfReferencePending_ || pfReferenceToken_)
+        return std::nullopt;
+
+    pfReferencePending_ = true;
+    PfEnableReferenceRecoveryResult result;
+    try {
+        result = pfReferenceCoordinator_->acquire(sessionSnapshot_->sessionId());
+    } catch (...) {
+        return std::nullopt;
+    }
+    if (!result.success || !result.token) {
+        pfReferencePending_ = result.cleanupPending;
+        return std::nullopt;
+    }
+    pfReferenceToken_ = QString::number(*result.token);
+    return pfReferenceToken_;
 }
 
 bool PfAnchorRecoverySystemOperations::releasePfReference(const QString &token) {
-    return activeSession() && delegate_.releasePfReference(token);
+    if (!activeSession())
+        return false;
+    if (!pfReferenceCoordinator_)
+        return delegate_.releasePfReference(token);
+    if (!anchorCleanupVerified_ || !pfReferencePending_ || !pfReferenceToken_ ||
+        token != *pfReferenceToken_)
+        return false;
+
+    PfEnableReferenceRecoveryResult result;
+    try {
+        result = pfReferenceCoordinator_->release(sessionSnapshot_->sessionId());
+    } catch (...) {
+        return false;
+    }
+    if (!result.success)
+        return false;
+    pfReferenceToken_.reset();
+    pfReferencePending_ = false;
+    return true;
 }
 
 bool PfAnchorRecoverySystemOperations::installAnchor(const SessionSnapshot &snapshot) {
     if (!activeSession(snapshot) || !leaseToken_)
+        return false;
+    if (pfReferenceCoordinator_)
+        anchorCleanupVerified_ = false;
+    if (pfReferenceCoordinator_ && (!pfReferencePending_ || !pfReferenceToken_))
         return false;
     return coordinator_.install(snapshot, *leaseToken_).success;
 }
@@ -99,7 +156,10 @@ bool PfAnchorRecoverySystemOperations::installAnchor(const SessionSnapshot &snap
 bool PfAnchorRecoverySystemOperations::removeAnchor(const SessionSnapshot &snapshot) {
     if (!activeSession(snapshot) || !leaseToken_)
         return false;
-    return coordinator_.cleanup(snapshot, *leaseToken_).success;
+    const bool cleaned = coordinator_.cleanup(snapshot, *leaseToken_).success;
+    if (cleaned)
+        anchorCleanupVerified_ = true;
+    return cleaned;
 }
 
 bool PfAnchorRecoverySystemOperations::clearOwnedState(const SessionSnapshot &snapshot) {

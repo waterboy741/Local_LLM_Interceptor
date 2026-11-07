@@ -180,8 +180,11 @@ bool parseEnabled(const QByteArray &output, bool *enabled) {
     if (QString::fromUtf8(output).toUtf8() != output)
         return false;
     const QRegularExpression expression(
-        "^\\s*Status:\\s*(Enabled|Disabled)(?:\\s+for\\s+\\d+\\s+days?\\s+"
-        "\\d{2}:\\d{2}:\\d{2})?\\s*$",
+        "^[\\t \\x{00A0}]*Status:[\\t \\x{00A0}]*(Enabled|Disabled)"
+        "(?:[\\t \\x{00A0}]+for[\\t \\x{00A0}]+\\d+[\\t \\x{00A0}]+days?"
+        "[\\t \\x{00A0}]+\\d{2}:\\d{2}:\\d{2})?"
+        "(?:[\\t \\x{00A0}]+Debug:[\\t \\x{00A0}]*(none|urgent|misc|loud))?"
+        "[\\t \\x{00A0}]*\\r?$",
         QRegularExpression::CaseInsensitiveOption | QRegularExpression::MultilineOption);
     const auto text = QString::fromUtf8(output);
     auto matches = expression.globalMatch(text);

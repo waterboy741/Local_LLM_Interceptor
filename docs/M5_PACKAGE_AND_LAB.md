@@ -77,6 +77,18 @@ Run the full inspection after a corresponding M4 session anchor exists and the u
 
 The JSON omits the configured interface name, addresses, session identifier, PF rule text, and raw states. Store actual lab configuration in separately controlled evidence notes. A completed diagnostic means all queries were read and parsed; it does not mean the configured references were found or traffic was intercepted. A preliminary lab invocation returned `permission_denied` on the first query; no rules or states were read. The command does not elevate or retry.
 
+### PF pre-install readiness check (M6 preparation only)
+
+`pf_readiness` performs a narrower read-only check before installing any application anchor. It queries only PF status and the main filter/translation rule listings, then reports whether PF is enabled and whether the main ruleset text references `llm_interceptor/*` for both rule types. It never loads rules, enables PF, or changes network configuration. The optional `--timeout-ms` value applies separately to each query and is bounded to 1–5000 ms; malformed or duplicate options exit before any query. On non-macOS systems the executable reports `unsupported_platform` without attempting a PF command.
+
+The JSON deliberately reports `references_observed_only: true` and `packet_evaluation_proven: false`. A ready result confirms only those pre-install observations. It does not verify an installed session anchor, rule counters, active PF evaluation, forwarding, proxy listener reachability, or the configured upstream path. The command does not elevate; if PF requires administrator privileges, run it explicitly with the required privilege after reviewing the command's read-only scope.
+
+The current user-reported PF status was disabled (`Status: Disabled`, with the recognized `Debug: Urgent` suffix), so the readiness result should remain false until PF is enabled through the host's own administration. The application does not enable PF.
+
+```sh
+./build/debug/pf_readiness --timeout-ms 3000
+```
+
 1. Verify direct client-to-mock-server connectivity and the configured path and port. Confirm that the server listens on the chosen LAN address and that the research Mac can reach it.
 2. Exercise the packaged explicit proxy on loopback. Start Observe, point only the test client at the displayed listener, send a JSON request, and verify one upstream delivery and an intact response. Test a streaming response and a nonmatching path. Stop, then verify the listener has closed.
 3. Exercise Modify with a synthetic chat request. Verify a shorter and a longer edited body arrive exactly once and that the response reaches the client. Verify Hold timeout and cancellation during stop.

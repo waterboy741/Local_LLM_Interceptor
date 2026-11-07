@@ -183,6 +183,54 @@ class M6PfDiagnosticsTests : public QObject {
         }
     }
 
+    void preInstallReadinessAcceptsOnlyTheObservedDebugSuffix() {
+        {
+            auto runner = successfulRunner();
+            runner.outputs[static_cast<int>(PfQuery::Status)].standardOutput =
+                "Status: Enabled                              Debug: Urgent\n";
+
+            const auto result = PfDiagnostics::collectPreInstallReadiness(runner);
+
+            QVERIFY(result.ready);
+            QVERIFY(result.pfEnabledKnown);
+            QVERIFY(result.pfEnabled);
+            QCOMPARE(result.statusCode, QString("preinstall_ready"));
+            QCOMPARE(runner.calls.size(), 3);
+            QCOMPARE(runner.calls.first().query, PfQuery::Status);
+        }
+        {
+            auto runner = successfulRunner();
+            runner.outputs[static_cast<int>(PfQuery::Status)].standardOutput =
+                "Status: Disabled                              Debug: Urgent\n";
+
+            const auto result = PfDiagnostics::collectPreInstallReadiness(runner);
+
+            QVERIFY(!result.ready);
+            QVERIFY(result.pfEnabledKnown);
+            QVERIFY(!result.pfEnabled);
+            QCOMPARE(result.statusCode, QString("pf_disabled"));
+            QCOMPARE(runner.calls.size(), 1);
+            QCOMPARE(runner.calls.first().query, PfQuery::Status);
+        }
+
+        const QList<QByteArray> malformedStatuses = {
+            "Status: Disabled Debug: Urgent extra\n",
+            "Status: Disabled Debug: Urgent Debug: Urgent\n", "Status: Disabled Debug: Unknown\n",
+            "Status: Disabled Debug: Urgent\nStatus: Disabled\n"};
+        for (const auto &status : malformedStatuses) {
+            auto runner = successfulRunner();
+            runner.outputs[static_cast<int>(PfQuery::Status)].standardOutput = status;
+
+            const auto result = PfDiagnostics::collectPreInstallReadiness(runner);
+
+            QVERIFY(!result.ready);
+            QVERIFY(!result.pfEnabledKnown);
+            QCOMPARE(result.statusCode, QString("unrecognized_output"));
+            QCOMPARE(runner.calls.size(), 1);
+            QCOMPARE(runner.calls.first().query, PfQuery::Status);
+        }
+    }
+
     void preInstallReadinessAcceptsValidVerboseCountersWithBothAttachments() {
         auto runner = successfulRunner();
         runner.outputs[static_cast<int>(PfQuery::MainFilterRules)].standardOutput =
@@ -209,9 +257,8 @@ class M6PfDiagnosticsTests : public QObject {
             {PfQuery::MainFilterRules,
              "@0 anchor \"llm_interceptor/*\" all\nnot a recognized pf rule\n"},
             {PfQuery::MainFilterRules, "@0 garbage without a recognized PF rule token\n"},
-            {PfQuery::MainFilterRules,
-             "@0 anchor \"llm_interceptor/*\" all\n"
-             "Evaluations: many Packets: 0 Bytes: 0\n"},
+            {PfQuery::MainFilterRules, "@0 anchor \"llm_interceptor/*\" all\n"
+                                       "Evaluations: many Packets: 0 Bytes: 0\n"},
             {PfQuery::MainFilterRules,
              "@0 anchor \"llm_interceptor/*\" all\n[malformed garbage]\n"},
             {PfQuery::MainFilterRules, "@0 anchor \"llm_interceptor/*' all\n"},
@@ -253,8 +300,8 @@ class M6PfDiagnosticsTests : public QObject {
             {PfCommandStatus::Failed, "failed"}};
         for (const auto &[commandStatus, expectedStatus] : failures) {
             auto runner = successfulRunner();
-            runner.outputs[static_cast<int>(PfQuery::Status)] =
-                {commandStatus, -1, "private command diagnostics 192.0.2.10"};
+            runner.outputs[static_cast<int>(PfQuery::Status)] = {
+                commandStatus, -1, "private command diagnostics 192.0.2.10"};
             const auto result = PfDiagnostics::collectPreInstallReadiness(runner);
             QVERIFY(!result.ready);
             QCOMPARE(result.statusCode, expectedStatus);
@@ -266,8 +313,8 @@ class M6PfDiagnosticsTests : public QObject {
         }
 
         auto nonzeroRunner = successfulRunner();
-        nonzeroRunner.outputs[static_cast<int>(PfQuery::Status)] =
-            {PfCommandStatus::Completed, 1, "private nonzero exit output"};
+        nonzeroRunner.outputs[static_cast<int>(PfQuery::Status)] = {PfCommandStatus::Completed, 1,
+                                                                    "private nonzero exit output"};
         const auto nonzero = PfDiagnostics::collectPreInstallReadiness(nonzeroRunner);
         QVERIFY(!nonzero.ready);
         QCOMPARE(nonzero.statusCode, QString("failed"));

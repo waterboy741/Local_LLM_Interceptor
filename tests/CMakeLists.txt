@@ -86,6 +86,14 @@ add_test(NAME m6_pf_enable_reference_recovery_coordinator
     COMMAND m6_pf_enable_reference_recovery_coordinator_tests)
 set_tests_properties(m6_pf_enable_reference_recovery_coordinator PROPERTIES TIMEOUT 30)
 
+qt_add_executable(m6_pf_enable_reference_qprocess_runner_tests
+    M6PfEnableReferenceQProcessRunnerTests.cpp)
+target_link_libraries(m6_pf_enable_reference_qprocess_runner_tests PRIVATE
+    interceptor_network Qt6::Test)
+add_test(NAME m6_pf_enable_reference_qprocess_runner
+    COMMAND m6_pf_enable_reference_qprocess_runner_tests)
+set_tests_properties(m6_pf_enable_reference_qprocess_runner PROPERTIES TIMEOUT 45)
+
 qt_add_executable(m6_route_neighbor_diagnostics_tests M6RouteNeighborDiagnosticsTests.cpp)
 target_link_libraries(m6_route_neighbor_diagnostics_tests PRIVATE interceptor_network Qt6::Test)
 add_test(NAME m6_route_neighbor_diagnostics COMMAND m6_route_neighbor_diagnostics_tests)

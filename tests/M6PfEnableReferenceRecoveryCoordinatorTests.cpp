@@ -302,6 +302,13 @@ class M6PfEnableReferenceRecoveryCoordinatorTests : public QObject {
         QCOMPARE(runner.calls.size(), 2);
         QCOMPARE(verifier.tokens, QVector<quint64>({73, 73, 73}));
         QCOMPARE(journal.read().status, PfEnableReferenceJournalStatus::Missing);
+
+        const auto repeated = coordinator.release("session-a");
+        QVERIFY(!repeated.success);
+        QVERIFY(!repeated.cleanupPending);
+        QCOMPARE(repeated.statusCode, QString("already_released"));
+        QCOMPARE(runner.calls.size(), 2);
+        QCOMPARE(verifier.tokens.size(), 3);
     }
 
     void releasePendingPersistenceFailurePreventsReleaseCommand() {

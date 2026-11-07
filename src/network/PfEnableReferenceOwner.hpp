@@ -38,6 +38,16 @@ struct PfEnableReferenceCommandResult {
     QByteArray standardOutput;
 };
 
+class PfEnableReferenceReleaseReceipt {
+  public:
+    quint64 token() const { return token_; }
+
+  private:
+    explicit PfEnableReferenceReleaseReceipt(quint64 token) : token_(token) {}
+    quint64 token_;
+    friend class PfEnableReferenceOwner;
+};
+
 class PfEnableReferenceCommandRunner {
   public:
     virtual ~PfEnableReferenceCommandRunner() = default;
@@ -59,6 +69,7 @@ struct PfEnableReferenceResult {
     bool cleanupPending = false;
     QString statusCode;
     std::optional<quint64> token;
+    std::optional<PfEnableReferenceReleaseReceipt> releaseReceipt;
 };
 
 class PfEnableReferenceOwner {

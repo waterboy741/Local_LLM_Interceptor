@@ -71,7 +71,7 @@ PfEnableReferenceResult PfEnableReferenceOwner::acquire() {
                 : state_ == PfEnableReferenceState::AcquireUncertain
                     ? QStringLiteral("acquisition_uncertain")
                     : QStringLiteral("acquisition_not_available"),
-                token_};
+                token_, std::nullopt};
 
     state_ = PfEnableReferenceState::Acquiring;
     PfEnableReferenceCommandResult result;
@@ -80,43 +80,46 @@ PfEnableReferenceResult PfEnableReferenceOwner::acquire() {
                                  commandTimeoutMs, maximumOutputBytes);
     } catch (...) {
         state_ = PfEnableReferenceState::AcquireUncertain;
-        return {false, true, QStringLiteral("acquisition_uncertain"), std::nullopt};
+        return {false, true, QStringLiteral("acquisition_uncertain"), std::nullopt, std::nullopt};
     }
 
     if (!result.started) {
         state_ = PfEnableReferenceState::Unacquired;
-        return {false, false, commandStatus(result.status), std::nullopt};
+        return {false, false, commandStatus(result.status), std::nullopt, std::nullopt};
     }
     const auto parsedToken = parseTokenOutput(result.standardOutput);
     if (parsedToken) {
         token_ = parsedToken;
         if (!result.processReaped) {
             state_ = PfEnableReferenceState::AcquireUncertain;
-            return {false, true, QStringLiteral("acquisition_uncertain_token_captured"), token_};
+            return {false, true, QStringLiteral("acquisition_uncertain_token_captured"), token_,
+                    std::nullopt};
         }
         state_ = PfEnableReferenceState::Owned;
         if (completed(result))
-            return {true, false, QStringLiteral("acquired"), token_};
-        return {false, true, QStringLiteral("acquisition_uncertain_token_captured"), token_};
+            return {true, false, QStringLiteral("acquired"), token_, std::nullopt};
+        return {false, true, QStringLiteral("acquisition_uncertain_token_captured"), token_,
+                std::nullopt};
     }
     state_ = PfEnableReferenceState::AcquireUncertain;
-    return {false, true, QStringLiteral("acquisition_uncertain_token_unknown"), std::nullopt};
+    return {false, true, QStringLiteral("acquisition_uncertain_token_unknown"), std::nullopt,
+            std::nullopt};
 }
 
 PfEnableReferenceResult PfEnableReferenceOwner::release() {
     if (state_ == PfEnableReferenceState::Released)
-        return {false, false, QStringLiteral("already_released"), std::nullopt};
+        return {false, false, QStringLiteral("already_released"), std::nullopt, std::nullopt};
     if (state_ == PfEnableReferenceState::Acquiring)
-        return {false, true, QStringLiteral("acquisition_in_progress"), std::nullopt};
+        return {false, true, QStringLiteral("acquisition_in_progress"), std::nullopt, std::nullopt};
     if (state_ == PfEnableReferenceState::AcquireUncertain)
         return {false, true,
                 token_ ? QStringLiteral("acquisition_uncertain_token_captured")
                        : QStringLiteral("acquisition_uncertain_token_unknown"),
-                token_};
+                token_, std::nullopt};
     if (state_ == PfEnableReferenceState::ReleaseUncertain)
-        return {false, true, QStringLiteral("release_already_attempted"), token_};
+        return {false, true, QStringLiteral("release_already_attempted"), token_, std::nullopt};
     if (state_ != PfEnableReferenceState::Owned || !token_)
-        return {false, false, QStringLiteral("no_owned_reference"), std::nullopt};
+        return {false, false, QStringLiteral("no_owned_reference"), std::nullopt, std::nullopt};
 
     const auto token = token_;
     // Mark before calling the injected runner so exceptions and reentrant calls cannot release
@@ -128,17 +131,18 @@ PfEnableReferenceResult PfEnableReferenceOwner::release() {
             runner_.execute(PfEnableReferenceCommand(PfEnableReferenceOperation::Release, *token),
                             commandTimeoutMs, maximumOutputBytes);
     } catch (...) {
-        return {false, true, QStringLiteral("release_uncertain"), token_};
+        return {false, true, QStringLiteral("release_uncertain"), token_, std::nullopt};
     }
     if (completed(result)) {
         state_ = PfEnableReferenceState::Released;
         token_.reset();
-        return {true, false, QStringLiteral("released"), std::nullopt};
+        return {true, false, QStringLiteral("released"), std::nullopt,
+                PfEnableReferenceReleaseReceipt(*token)};
     }
     return {false, true,
             QStringLiteral("release_uncertain") + QStringLiteral("_") +
                 commandStatus(result.status),
-            token_};
+            token_, std::nullopt};
 }
 
 } // namespace interceptor

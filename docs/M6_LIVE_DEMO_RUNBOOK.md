@@ -1,0 +1,105 @@
+# One-client transparent lab trial (8 November 2026)
+
+This runbook is for the authorized, manually operated lab trial only. The app's **Transparent lab demo** listener must display `Ready: interface=en0 client=192.168.1.169 server=192.168.1.141:11434 listener=127.0.0.1:11434` throughout the trial. The research Mac currently has `en0=192.168.1.16/24`, MAC `7c:d1:ad:b8:5a:8e`; Ubuntu is `192.168.1.169/24` on `wlp2s0`; Ollama is `192.168.1.141:11434`. Recheck these facts before running any mutation. The Mac's PF baseline was **Disabled**, with only stock `com.apple/*` references and no PF enable references. The Ubuntu shell's selected route to Ollama was direct through `wlp2s0`. These observations expire when the network changes.
+
+The two prepared, ignored files are `build/demo-pf-candidate.conf` and `build/demo-session-rules.pf`. The first differs from `/etc/pf.conf` only by one `rdr-anchor "llm_interceptor/*"` and one `anchor "llm_interceptor/*"` reference. The second contains one scoped redirect and two scoped pass rules for `llm_interceptor/lab_demo_20261108`. Both passed `/sbin/pfctl -n -f` syntax checks. `build/demo-pf-original.conf` is an exact copy of the stock main configuration for rollback. No system PF file has been edited. Do not use a broad PF flush or a global PF disable.
+
+## Before changes
+
+On the Mac, leave the app open in Observe mode. From the repository root, check the listener, files, and baseline again:
+
+```sh
+lsof -nP -iTCP@127.0.0.1:11434 -sTCP:LISTEN
+cmp /etc/pf.conf build/demo-pf-original.conf
+diff -u /etc/pf.conf build/demo-pf-candidate.conf
+/sbin/pfctl -n -f build/demo-pf-candidate.conf
+/sbin/pfctl -a llm_interceptor/lab_demo_20261108 -n -f build/demo-session-rules.pf
+sudo /sbin/pfctl -s info | head -n 2
+sudo /sbin/pfctl -sr
+sudo /sbin/pfctl -sn
+sudo /sbin/pfctl -s References
+```
+
+Stop if the listener port, PF baseline, main configuration, or candidate diff changed. On Ubuntu, confirm `ip -4 route get 192.168.1.141` selects `dev wlp2s0` without `via`, and record `ip neigh show 192.168.1.141 dev wlp2s0`. The original Ollama MAC observed earlier was `bc:c7:46:9e:b3:30`; verify it again. A host route is unnecessary while the selected route remains direct.
+
+## Stage PF on the Mac
+
+Keep a second Mac terminal open for the rollback below. Run each command separately from the repository root and inspect its output before continuing:
+
+```sh
+sudo /sbin/pfctl -f build/demo-pf-candidate.conf
+sudo /sbin/pfctl -a llm_interceptor/lab_demo_20261108 -f build/demo-session-rules.pf
+sudo /sbin/pfctl -E
+```
+
+**Record the exact token** printed by `-E`; it is needed to release only this trial's PF enable reference. If any command fails or an unexpected rule appears, perform the Mac rollback before touching Ubuntu. Verify both active attachment types and both owned rule types:
+
+```sh
+sudo /sbin/pfctl -s info | head -n 2
+sudo /sbin/pfctl -s References
+sudo /sbin/pfctl -sn
+sudo /sbin/pfctl -sr
+sudo /sbin/pfctl -a llm_interceptor/lab_demo_20261108 -sn
+sudo /sbin/pfctl -a llm_interceptor/lab_demo_20261108 -sr
+```
+
+The main `-f` command can replace rules dynamically inserted into the main ruleset by macOS services. The observed baseline contained only stock anchor references, but stop and roll back if that changes. This staged trial does not edit `/etc/pf.conf` on disk.
+
+## One Ubuntu client request
+
+Only after the PF checks pass, on Ubuntu reconfirm the direct route and original neighbor MAC. Keep the original OpenCode URL unchanged. Then redirect **only the Ollama neighbor entry** to the verified research Mac MAC:
+
+```sh
+sudo ip neigh replace 192.168.1.141 lladdr 7c:d1:ad:b8:5a:8e nud permanent dev wlp2s0
+ip neigh show 192.168.1.141 dev wlp2s0
+```
+
+Send one small synthetic `/v1/chat/completions` request to the unchanged Ollama address using the installed `qwen3.5:9b` model, then inspect the GUI and response. Use a short timeout and a harmless prompt. If it succeeds, send one short OpenCode request and record the GUI, response, and PF counters. If it fails, roll back immediately and preserve the HTTP status, PF counter, and GUI observation for diagnosis. Do not change the gateway neighbor mapping.
+
+## Rollback
+
+On Ubuntu, remove the temporary permanent neighbor entry **first**, then confirm the server's own MAC is learned again:
+
+```sh
+sudo ip neigh del 192.168.1.141 dev wlp2s0
+ip -4 route get 192.168.1.141
+curl --max-time 5 http://192.168.1.141:11434/api/version
+ip neigh show 192.168.1.141 dev wlp2s0
+```
+
+If a one-host route was required after a route change, remove only that route and verify the original selected route. It was **not** required by the most recent direct-route observation.
+
+On the Mac, clear only the owned anchor's translation rules first. **Stop and keep the PF enable reference** if the command fails or the follow-up `-sn` output is not empty:
+
+```sh
+sudo /sbin/pfctl -a llm_interceptor/lab_demo_20261108 -F nat
+sudo /sbin/pfctl -a llm_interceptor/lab_demo_20261108 -sn
+```
+
+Only after that check succeeds, clear the owned filter rules. Again, stop and keep the PF reference if the command fails or `-sr` is not empty:
+
+```sh
+sudo /sbin/pfctl -a llm_interceptor/lab_demo_20261108 -F rules
+sudo /sbin/pfctl -a llm_interceptor/lab_demo_20261108 -sr
+```
+
+Close the test client connection, then inspect `sudo /sbin/pfctl -ss` for states involving this trial's client, server, or listener tuple. Rule removal does **not** remove existing states. Wait for those states to close or expire before restoring the main PF ruleset. If they remain, keep the PF reference and inspect them before considering a targeted state removal; never use global `-F states`.
+
+Once both owned rule sets are confirmed empty and the trial's states have cleared, restore the original main ruleset and verify that the only main references are the stock `com.apple/*` ones. Stop and keep the PF reference if restoration or verification fails:
+
+```sh
+sudo /sbin/pfctl -f build/demo-pf-original.conf
+sudo /sbin/pfctl -sn
+sudo /sbin/pfctl -sr
+sudo /sbin/pfctl -s References
+```
+
+Finally, release **only the token returned by this trial's `-E`** and verify the original disabled/no-reference baseline:
+
+```sh
+sudo /sbin/pfctl -X TOKEN_FROM_THIS_TRIAL
+sudo /sbin/pfctl -s info | head -n 2
+sudo /sbin/pfctl -s References
+```
+
+Replace `TOKEN_FROM_THIS_TRIAL` with the actual token; never paste that placeholder as a command. If `-E` did not return a token, skip `-X`. Do not release the reference if any prior cleanup or verification stage failed. Stop the GUI listener. Verify direct OpenCode access to Ollama is restored. If the original neighbor MAC or PF baseline does not return, keep the trial marked incomplete and diagnose that state before another attempt.

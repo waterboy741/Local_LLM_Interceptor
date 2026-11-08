@@ -1,6 +1,6 @@
 # M4 offline network helper
 
-The network module is an offline integration layer with a validated command dispatcher. It has no concrete macOS mutation backend, helper executable, installed privileged service, or GUI activation path. Existing application launch and Observe/Modify workflows remain the explicit local proxy. `SystemOperations` is injected in tests; every network readiness result and mutation result is synthetic. No PF rules, settings, neighbors, or captures were changed for M4.
+The network module is an offline integration layer with a validated command dispatcher. It has no concrete macOS mutation backend, helper executable, installed privileged service, or GUI activation path. The current GUI Observe/Modify workflow is an explicit proxy for a configured remote client; the lower-level loopback proxy API remains available for offline tests and future work. `SystemOperations` is injected in tests; every network readiness result and mutation result is synthetic. No PF rules, settings, neighbors, or captures were changed for M4.
 
 ## Snapshot and routing contract
 

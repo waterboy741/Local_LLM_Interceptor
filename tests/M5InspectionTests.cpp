@@ -5,12 +5,15 @@
 #include "session/SessionController.hpp"
 
 #include <QBuffer>
-#include <QCheckBox>
+#include <QComboBox>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
+#include <QNetworkInterface>
 #include <QPushButton>
+#include <QRegularExpression>
 #include <QSpinBox>
 #include <QTcpServer>
 #include <QTcpSocket>
@@ -23,9 +26,46 @@ class M5InspectionTests : public QObject {
     Q_OBJECT
 
   private:
+    struct RemoteProxyAddresses {
+        QString interfaceName;
+        QString listenAddress;
+        QString clientAddress;
+    };
+
     static bool loopbackAvailable() {
         QTcpServer probe;
         return probe.listen(QHostAddress::LocalHost, 0);
+    }
+
+    static bool usableUnicast(const QHostAddress &address) {
+        return address.protocol() == QAbstractSocket::IPv4Protocol && !address.isNull() &&
+               !address.isLoopback() && !address.isMulticast() &&
+               address != QHostAddress::AnyIPv4 && address != QHostAddress::Broadcast &&
+               (address.toIPv4Address() & 0xffff0000U) != 0xa9fe0000U;
+    }
+
+    static std::optional<RemoteProxyAddresses> remoteProxyAddresses() {
+        struct InterfaceAddress {
+            QString interfaceName;
+            QString address;
+        };
+        QList<InterfaceAddress> addresses;
+        for (const auto &networkInterface : QNetworkInterface::allInterfaces()) {
+            const auto flags = networkInterface.flags();
+            if (!flags.testFlag(QNetworkInterface::IsUp) ||
+                !flags.testFlag(QNetworkInterface::IsRunning) ||
+                flags.testFlag(QNetworkInterface::IsLoopBack))
+                continue;
+            for (const auto &entry : networkInterface.addressEntries())
+                if (usableUnicast(entry.ip()))
+                    addresses.push_back({networkInterface.name(), entry.ip().toString()});
+        }
+        for (const auto &listener : addresses)
+            for (const auto &client : addresses)
+                if (client.address != listener.address)
+                    return RemoteProxyAddresses{listener.interfaceName, listener.address,
+                                                client.address};
+        return std::nullopt;
     }
     static ObservedRequest record(quint64 id, bool modified = false) {
         ObservedRequest item;
@@ -193,34 +233,46 @@ class M5InspectionTests : public QObject {
     void guiEventLoopRemainsResponsiveDuringSyntheticRequestLoad() {
         if (!loopbackAvailable())
             QSKIP("Loopback sockets are unavailable in this test environment.");
+        const auto addresses = remoteProxyAddresses();
+        if (!addresses)
+            QSKIP("Remote Observe end-to-end testing requires two distinct locally assigned "
+                  "non-loopback IPv4 addresses for the listener and client.");
         MockOllama mock;
         SessionController controller;
         MainWindow window(&controller);
-        auto *localDevice = window.findChild<QCheckBox *>("localDeviceInput");
+        auto *interfaces = window.findChild<QComboBox *>("interfaceInput");
+        auto *clientInput = window.findChild<QLineEdit *>("clientIpInput");
         auto *server = window.findChild<QLineEdit *>("serverIpInput");
         auto *serverPort = window.findChild<QSpinBox *>("serverPortInput");
         auto *listenPort = window.findChild<QSpinBox *>("localListenPortInput");
+        auto *status = window.findChild<QLabel *>("sessionStatus");
         auto *historyLimit = window.findChild<QSpinBox *>("historyRecordLimitInput");
         auto *prepare = window.findChild<QPushButton *>("prepareButton");
         auto *start = window.findChild<QPushButton *>("startObserveButton");
         auto *requestList = window.findChild<QListWidget *>("observedRequests");
-        QVERIFY(localDevice && server && serverPort && listenPort && historyLimit && prepare &&
-                start && requestList);
-        QTcpServer reservation;
-        QVERIFY(reservation.listen(QHostAddress::LocalHost, 0));
-        const auto proxyPort = reservation.serverPort();
-        reservation.close();
-        localDevice->setChecked(true);
+        QVERIFY(interfaces && clientInput && server && serverPort && listenPort && historyLimit &&
+                prepare && start && status && requestList);
+        const auto interfaceRow = interfaces->findData(addresses->interfaceName);
+        QVERIFY(interfaceRow >= 0);
+        interfaces->setCurrentIndex(interfaceRow);
+        clientInput->setText(addresses->clientAddress);
         server->setText("127.0.0.1");
         serverPort->setValue(mock.serverPort());
-        listenPort->setValue(proxyPort);
+        listenPort->setValue(0);
         historyLimit->setValue(300);
         prepare->click();
         QCOMPARE(controller.state(), SessionController::State::Ready);
         start->click();
+        const auto endpoint =
+            QRegularExpression(QString("http://%1:(\\d+)")
+                                   .arg(QRegularExpression::escape(addresses->listenAddress)))
+                .match(status->text());
+        QVERIFY2(endpoint.hasMatch(), qPrintable(status->text()));
+        const auto proxyPort = endpoint.captured(1).toUShort();
 
         QTcpSocket client;
-        client.connectToHost(QHostAddress::LocalHost, proxyPort);
+        QVERIFY(client.bind(QHostAddress(addresses->clientAddress)));
+        client.connectToHost(QHostAddress(addresses->listenAddress), proxyPort);
         QTRY_COMPARE(client.state(), QAbstractSocket::ConnectedState);
         int heartbeats = 0;
         QTimer heartbeat;

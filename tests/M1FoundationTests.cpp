@@ -33,6 +33,58 @@ class M1FoundationTests : public QObject {
     Q_OBJECT
 
   private:
+    struct RemoteProxyAddresses {
+        QString interfaceName;
+        QString listenAddress;
+        QString clientAddress;
+    };
+
+    static bool loopbackAvailable() {
+        QTcpServer probe;
+        const bool available = probe.listen(QHostAddress::LocalHost, 0);
+        probe.close();
+        return available;
+    }
+
+    static bool usableUnicast(const QHostAddress &address) {
+        return address.protocol() == QAbstractSocket::IPv4Protocol && !address.isNull() &&
+               !address.isLoopback() && !address.isMulticast() &&
+               address != QHostAddress::AnyIPv4 && address != QHostAddress::Broadcast &&
+               (address.toIPv4Address() & 0xffff0000U) != 0xa9fe0000U;
+    }
+
+    static std::optional<RemoteProxyAddresses> remoteProxyAddresses() {
+        struct InterfaceAddress {
+            QString interfaceName;
+            QString address;
+        };
+        QList<InterfaceAddress> addresses;
+        for (const auto &networkInterface : QNetworkInterface::allInterfaces()) {
+            const auto flags = networkInterface.flags();
+            if (!flags.testFlag(QNetworkInterface::IsUp) ||
+                !flags.testFlag(QNetworkInterface::IsRunning) ||
+                flags.testFlag(QNetworkInterface::IsLoopBack))
+                continue;
+            for (const auto &entry : networkInterface.addressEntries())
+                if (usableUnicast(entry.ip()))
+                    addresses.push_back({networkInterface.name(), entry.ip().toString()});
+        }
+        for (const auto &listener : addresses)
+            for (const auto &client : addresses)
+                if (client.address != listener.address)
+                    return RemoteProxyAddresses{listener.interfaceName, listener.address,
+                                                client.address};
+        return std::nullopt;
+    }
+
+    static SessionConfig remoteConfig(const MockOllama &mock, const RemoteProxyAddresses &addresses,
+                                      QStringList paths = SessionConfig{}.apiPaths) {
+        SessionConfig config{addresses.interfaceName, addresses.clientAddress, "127.0.0.1",
+                             int(mock.serverPort()), paths};
+        config.explicitProxy = true;
+        return config;
+    }
+
     static SessionConfig validConfig() {
         SessionConfig config;
         config.interfaceName = "synthetic0";
@@ -95,39 +147,43 @@ class M1FoundationTests : public QObject {
         QVERIFY(!config.validate().isEmpty());
     }
 
-    void localDeviceGuiPreparesWithoutInterfaceOrSeparateClient() {
+    void removedLocalAndTransparentControlsLeaveRemoteObserveAndModifyUi() {
         SessionController controller;
         MainWindow window(&controller);
-        auto *local = window.findChild<QCheckBox *>("localDeviceInput");
         auto *interfaces = window.findChild<QComboBox *>("interfaceInput");
         auto *client = window.findChild<QLineEdit *>("clientIpInput");
         auto *server = window.findChild<QLineEdit *>("serverIpInput");
         auto *listenPort = window.findChild<QSpinBox *>("localListenPortInput");
         auto *prepare = window.findChild<QPushButton *>("prepareButton");
-        QVERIFY(local && interfaces && client && server && listenPort && prepare);
-        server->clear();
-        local->setChecked(true);
-        QCOMPARE(server->text(), QString("127.0.0.1"));
+        auto *start = window.findChild<QPushButton *>("startObserveButton");
+        auto *requests = window.findChild<QListWidget *>("observedRequests");
+        auto *mode = window.findChild<QComboBox *>("interceptionModeInput");
+        auto *tabs = window.findChild<QTabWidget *>();
+        QVERIFY(interfaces && client && server && listenPort && prepare && start && requests &&
+                mode && tabs);
+        QVERIFY(!window.findChild<QCheckBox *>("localDeviceInput"));
+        QVERIFY(!window.findChild<QPushButton *>("startTransparentDemoButton"));
+        QVERIFY(!window.findChild<QPushButton *>("stopTransparentDemoButton"));
+        QVERIFY(!window.findChild<QLineEdit *>("transparentDemoStatus"));
+        QCOMPARE(tabs->tabText(1), QString("Requests"));
+        QCOMPARE(tabs->tabText(2), QString("Modify settings"));
+        QVERIFY(!start->isEnabled());
+        QVERIFY(client->isEnabled());
         QCOMPARE(listenPort->value(), 11434);
-        QVERIFY(!interfaces->isEnabled());
-        QVERIFY(!client->isEnabled());
-        interfaces->clear();
-        client->clear();
-        server->setText("127.0.0.1");
+        if (interfaces->count() == 0)
+            QSKIP("No network interface available to prepare remote Observe.");
+        interfaces->setCurrentIndex(0);
+        client->setText("192.0.2.10");
+        server->setText("198.51.100.30");
         prepare->click();
         QCOMPARE(controller.state(), SessionController::State::Ready);
-        QCOMPARE(listenPort->value(), 0);
+        QVERIFY(start->isEnabled());
         QVERIFY(controller.config().has_value());
         QVERIFY(controller.config()->explicitProxy);
-        QCOMPARE(controller.config()->clientIp, QString("127.0.0.1"));
-        QCOMPARE(controller.config()->serverIp, QString("127.0.0.1"));
-        QVERIFY(controller.config()->interfaceName.isEmpty());
-        QVERIFY(!local->isEnabled());
+        QCOMPARE(controller.config()->clientIp, QString("192.0.2.10"));
+        QCOMPARE(controller.config()->serverIp, QString("198.51.100.30"));
+        QCOMPARE(controller.config()->interfaceName, interfaces->currentData().toString());
         controller.stop();
-        QVERIFY(local->isEnabled());
-        QVERIFY(!client->isEnabled());
-        local->setChecked(false);
-        QVERIFY(client->isEnabled());
     }
 
     void localClientCanUseRemoteUpstreamOnTheSamePort() {
@@ -141,53 +197,6 @@ class M1FoundationTests : public QObject {
         SessionController controller;
         QVERIFY(controller.prepare(config));
         QCOMPARE(controller.config()->serverPort, 11434);
-    }
-
-    void localDeviceRemoteUpstreamRetainsDefaultListener() {
-        SessionController controller;
-        MainWindow window(&controller);
-        auto *local = window.findChild<QCheckBox *>("localDeviceInput");
-        auto *server = window.findChild<QLineEdit *>("serverIpInput");
-        auto *listenPort = window.findChild<QSpinBox *>("localListenPortInput");
-        auto *prepare = window.findChild<QPushButton *>("prepareButton");
-        QVERIFY(local && server && listenPort && prepare);
-        local->setChecked(true);
-        server->setText("192.168.1.141");
-        QCOMPARE(listenPort->value(), 11434);
-        prepare->click();
-        QCOMPARE(controller.state(), SessionController::State::Ready);
-        QCOMPARE(listenPort->value(), 11434);
-    }
-
-    void loopbackClientGuiAcceptsRemoteUpstreamOnSamePort() {
-        SessionController controller;
-        MainWindow window(&controller);
-        auto *interfaces = window.findChild<QComboBox *>("interfaceInput");
-        auto *client = window.findChild<QLineEdit *>("clientIpInput");
-        auto *server = window.findChild<QLineEdit *>("serverIpInput");
-        auto *port = window.findChild<QSpinBox *>("serverPortInput");
-        auto *listenPort = window.findChild<QSpinBox *>("localListenPortInput");
-        auto *local = window.findChild<QCheckBox *>("localDeviceInput");
-        auto *prepare = window.findChild<QPushButton *>("prepareButton");
-        QVERIFY(interfaces && client && server && port && listenPort && local && prepare);
-        QVERIFY(!local->isChecked());
-        interfaces->clear();
-        interfaces->addItem(QString("lo0"), QVariant(QString("lo0")));
-        interfaces->setCurrentIndex(0);
-        QCOMPARE(interfaces->currentData().toString(), QString("lo0"));
-        client->setText("127.0.0.1");
-        server->setText("192.168.1.141");
-        port->setValue(11434);
-        listenPort->setValue(11434);
-        prepare->click();
-        QCOMPARE(controller.state(), SessionController::State::Ready);
-        QCOMPARE(controller.config()->interfaceName, QString("lo0"));
-        QCOMPARE(controller.config()->serverIp, QString("192.168.1.141"));
-        controller.stop();
-        server->setText("127.0.0.1");
-        prepare->click();
-        QCOMPARE(controller.state(), SessionController::State::Idle);
-        QVERIFY(!controller.config().has_value());
     }
 
     void preparationUsesIndependentSnapshot() {
@@ -355,6 +364,12 @@ class M1FoundationTests : public QObject {
     }
 
     void observeRequestsAppearWithExactDetailsAndCloseStopsRelay() {
+        if (!loopbackAvailable())
+            QSKIP("Loopback sockets are unavailable in this test environment.");
+        const auto addresses = remoteProxyAddresses();
+        if (!addresses)
+            QSKIP("Remote Observe end-to-end testing requires two distinct locally assigned "
+                  "non-loopback IPv4 addresses for the listener and client.");
         QTcpServer mock;
         QVERIFY(mock.listen(QHostAddress::LocalHost, 0));
         int requestsReceived = 0;
@@ -385,27 +400,38 @@ class M1FoundationTests : public QObject {
         MainWindow window(&controller);
         auto *start = window.findChild<QPushButton *>("startObserveButton");
         auto *listenPort = window.findChild<QSpinBox *>("localListenPortInput");
+        auto *clientInput = window.findChild<QLineEdit *>("clientIpInput");
+        auto *serverInput = window.findChild<QLineEdit *>("serverIpInput");
+        auto *serverPort = window.findChild<QSpinBox *>("serverPortInput");
+        auto *interfaces = window.findChild<QComboBox *>("interfaceInput");
+        auto *prepare = window.findChild<QPushButton *>("prepareButton");
         auto *status = window.findChild<QLabel *>("sessionStatus");
         auto *list = window.findChild<QListWidget *>("observedRequests");
         auto *details = window.findChild<QTextEdit *>("requestDetails");
-        QVERIFY(start && listenPort && status && list && details);
+        QVERIFY(start && listenPort && clientInput && serverInput && serverPort && interfaces &&
+                prepare && status && list && details);
         QVERIFY(!start->isEnabled());
         QCOMPARE(list->count(), 0);
         listenPort->setValue(0);
-        auto config = validConfig();
-        config.serverIp = "127.0.0.1";
-        config.serverPort = mock.serverPort();
-        config.explicitProxy = true;
-        config.interfaceName.clear();
-        config.clientIp = "127.0.0.1";
-        QVERIFY(controller.prepare(config));
+        const int interfaceRow = interfaces->findData(addresses->interfaceName);
+        QVERIFY(interfaceRow >= 0);
+        interfaces->setCurrentIndex(interfaceRow);
+        clientInput->setText(addresses->clientAddress);
+        serverInput->setText("127.0.0.1");
+        serverPort->setValue(mock.serverPort());
+        prepare->click();
+        QCOMPARE(controller.state(), SessionController::State::Ready);
         QVERIFY(start->isEnabled());
         start->click();
         const auto endpoint =
-            QRegularExpression("http://127\\.0\\.0\\.1:(\\d+)").match(status->text());
+            QRegularExpression(QString("http://%1:(\\d+)")
+                                   .arg(QRegularExpression::escape(addresses->listenAddress)))
+                .match(status->text());
         QVERIFY2(endpoint.hasMatch(), qPrintable(status->text()));
         QTcpSocket client;
-        client.connectToHost(QHostAddress::LocalHost, endpoint.captured(1).toUShort());
+        QVERIFY(client.bind(QHostAddress(addresses->clientAddress)));
+        client.connectToHost(QHostAddress(addresses->listenAddress),
+                             endpoint.captured(1).toUShort());
         QTRY_COMPARE(client.state(), QAbstractSocket::ConnectedState);
         const QByteArray body = " { \"prompt\": \"synthetic GUI request\" } ";
         const auto request = [&](const QByteArray &path) {
@@ -483,6 +509,10 @@ class M1FoundationTests : public QObject {
     }
 
     void requestDetailsStayScrolledAndPrettyPrintingPreservesRawBodies() {
+        const auto addresses = remoteProxyAddresses();
+        if (!addresses)
+            QSKIP("Remote Observe end-to-end testing requires two distinct locally assigned "
+                  "non-loopback IPv4 addresses for the listener and client.");
         MockOllama mock;
         SessionController controller;
         MainWindow window(&controller);
@@ -498,20 +528,18 @@ class M1FoundationTests : public QObject {
         auto *messageDetails = window.findChild<QTextEdit *>("messageDetails");
         QVERIFY(start && listenPort && status && list && details && messages && messageDetails);
         listenPort->setValue(0);
-        auto config = validConfig();
-        config.serverIp = "127.0.0.1";
-        config.serverPort = mock.serverPort();
-        config.explicitProxy = true;
-        config.interfaceName.clear();
-        config.clientIp = "127.0.0.1";
-        config.apiPaths = {"/v1/chat/completions"};
+        const auto config = remoteConfig(mock, *addresses, {"/v1/chat/completions"});
         QVERIFY(controller.prepare(config));
         start->click();
         const auto endpoint =
-            QRegularExpression("http://127\\.0\\.0\\.1:(\\d+)").match(status->text());
+            QRegularExpression(QString("http://%1:(\\d+)")
+                                   .arg(QRegularExpression::escape(addresses->listenAddress)))
+                .match(status->text());
         QVERIFY2(endpoint.hasMatch(), qPrintable(status->text()));
         QTcpSocket client;
-        client.connectToHost(QHostAddress::LocalHost, endpoint.captured(1).toUShort());
+        QVERIFY(client.bind(QHostAddress(addresses->clientAddress)));
+        client.connectToHost(QHostAddress(addresses->listenAddress),
+                             endpoint.captured(1).toUShort());
         QTRY_COMPARE(client.state(), QAbstractSocket::ConnectedState);
         const auto send = [&](const QByteArray &body) {
             client.write("POST /v1/chat/completions HTTP/1.1\r\nHost: ignored\r\n"
@@ -584,6 +612,10 @@ class M1FoundationTests : public QObject {
     }
 
     void modifyControlsHoldValidatePreserveEditorAndDisplayAudit() {
+        const auto addresses = remoteProxyAddresses();
+        if (!addresses)
+            QSKIP("Remote Observe end-to-end testing requires two distinct locally assigned "
+                  "non-loopback IPv4 addresses for the listener and client.");
         MockOllama mock;
         SessionController controller;
         MainWindow window(&controller);
@@ -613,19 +645,18 @@ class M1FoundationTests : public QObject {
                             "generate\",\"fieldPath\":[\"prompt\"],\"value\":\"rule preview\"}]");
         apply->click();
         listenPort->setValue(0);
-        auto config = validConfig();
-        config.serverIp = "127.0.0.1";
-        config.serverPort = mock.serverPort();
-        config.explicitProxy = true;
-        config.interfaceName.clear();
-        config.clientIp = "127.0.0.1";
+        const auto config = remoteConfig(mock, *addresses);
         QVERIFY(controller.prepare(config));
         start->click();
         const auto endpoint =
-            QRegularExpression("http://127\\.0\\.0\\.1:(\\d+)").match(status->text());
+            QRegularExpression(QString("http://%1:(\\d+)")
+                                   .arg(QRegularExpression::escape(addresses->listenAddress)))
+                .match(status->text());
         QVERIFY2(endpoint.hasMatch(), qPrintable(status->text()));
         QTcpSocket client;
-        client.connectToHost(QHostAddress::LocalHost, endpoint.captured(1).toUShort());
+        QVERIFY(client.bind(QHostAddress(addresses->clientAddress)));
+        client.connectToHost(QHostAddress(addresses->listenAddress),
+                             endpoint.captured(1).toUShort());
         QTRY_COMPARE(client.state(), QAbstractSocket::ConnectedState);
         const QByteArray original = " {\"model\":\"fixture\",\"prompt\":\"original\"} ";
         const auto request = [&] {
@@ -696,6 +727,10 @@ class M1FoundationTests : public QObject {
     }
 
     void heldLastMessageEditorUpdatesOnlyFinalMessage() {
+        const auto addresses = remoteProxyAddresses();
+        if (!addresses)
+            QSKIP("Remote Observe end-to-end testing requires two distinct locally assigned "
+                  "non-loopback IPv4 addresses for the listener and client.");
         MockOllama mock;
         SessionController controller;
         MainWindow window(&controller);
@@ -717,20 +752,18 @@ class M1FoundationTests : public QObject {
         hold->setChecked(true);
         applyMode->click();
         listenPort->setValue(0);
-        auto config = validConfig();
-        config.serverIp = "127.0.0.1";
-        config.serverPort = mock.serverPort();
-        config.apiPaths = {"/v1/chat/completions"};
-        config.explicitProxy = true;
-        config.interfaceName.clear();
-        config.clientIp = "127.0.0.1";
+        const auto config = remoteConfig(mock, *addresses, {"/v1/chat/completions"});
         QVERIFY(controller.prepare(config));
         start->click();
         const auto endpoint =
-            QRegularExpression("http://127\\.0\\.0\\.1:(\\d+)").match(status->text());
+            QRegularExpression(QString("http://%1:(\\d+)")
+                                   .arg(QRegularExpression::escape(addresses->listenAddress)))
+                .match(status->text());
         QVERIFY2(endpoint.hasMatch(), qPrintable(status->text()));
         QTcpSocket client;
-        client.connectToHost(QHostAddress::LocalHost, endpoint.captured(1).toUShort());
+        QVERIFY(client.bind(QHostAddress(addresses->clientAddress)));
+        client.connectToHost(QHostAddress(addresses->listenAddress),
+                             endpoint.captured(1).toUShort());
         QTRY_COMPARE(client.state(), QAbstractSocket::ConnectedState);
         const QByteArray body =
             R"({"model":"fixture","messages":[{"role":"system","content":"keep"},{"role":"user","content":"old"}]})";
@@ -767,6 +800,10 @@ class M1FoundationTests : public QObject {
     }
 
     void automaticMessageControlsConfigureChatCompletionEditing() {
+        const auto addresses = remoteProxyAddresses();
+        if (!addresses)
+            QSKIP("Remote Observe end-to-end testing requires two distinct locally assigned "
+                  "non-loopback IPv4 addresses for the listener and client.");
         MockOllama mock;
         SessionController controller;
         MainWindow window(&controller);
@@ -794,20 +831,18 @@ class M1FoundationTests : public QObject {
         apply->click();
         tabs->setCurrentIndex(0);
         listenPort->setValue(0);
-        auto config = validConfig();
-        config.serverIp = "127.0.0.1";
-        config.serverPort = mock.serverPort();
-        config.apiPaths = {"/v1/chat/completions"};
-        config.explicitProxy = true;
-        config.interfaceName.clear();
-        config.clientIp = "127.0.0.1";
+        const auto config = remoteConfig(mock, *addresses, {"/v1/chat/completions"});
         QVERIFY(controller.prepare(config));
         start->click();
         const auto endpoint =
-            QRegularExpression("http://127\\.0\\.0\\.1:(\\d+)").match(status->text());
+            QRegularExpression(QString("http://%1:(\\d+)")
+                                   .arg(QRegularExpression::escape(addresses->listenAddress)))
+                .match(status->text());
         QVERIFY2(endpoint.hasMatch(), qPrintable(status->text()));
         QTcpSocket client;
-        client.connectToHost(QHostAddress::LocalHost, endpoint.captured(1).toUShort());
+        QVERIFY(client.bind(QHostAddress(addresses->clientAddress)));
+        client.connectToHost(QHostAddress(addresses->listenAddress),
+                             endpoint.captured(1).toUShort());
         QTRY_COMPARE(client.state(), QAbstractSocket::ConnectedState);
         const QByteArray body =
             R"({"model":"fixture","messages":[{"role":"user","content":"hello"}]})";

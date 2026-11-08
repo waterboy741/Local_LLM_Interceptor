@@ -4,13 +4,16 @@
 #include "proxy/ProxyServer.hpp"
 #include "session/SessionController.hpp"
 
+#include <QCheckBox>
 #include <QComboBox>
 #include <QHostAddress>
 #include <QLineEdit>
+#include <QListWidget>
 #include <QNetworkInterface>
 #include <QPushButton>
 #include <QRegularExpression>
 #include <QSpinBox>
+#include <QTabWidget>
 #include <QTcpServer>
 #include <QTcpSocket>
 #include <QtTest>
@@ -78,73 +81,19 @@ class M6TransparentLabDemoTests final : public QObject {
     Q_OBJECT
 
   private slots:
-    void guiStartsLanDemoForSelectedClientAndStopsIt() {
-        const auto interfaceName = activeNonLoopbackInterface();
-        if (!interfaceName)
-            QSKIP("An active non-loopback IPv4 interface is required to bind the transparent demo");
-        if (!loopbackListenerAvailable())
-            QSKIP("This environment does not permit local loopback listeners");
-
+    void guiOmitsTransparentDemoControlsButKeepsRequestsAndModify() {
         SessionController controller;
         MainWindow window(&controller);
-        auto *interfaces = window.findChild<QComboBox *>("interfaceInput");
-        auto *client = window.findChild<QLineEdit *>("clientIpInput");
-        auto *server = window.findChild<QLineEdit *>("serverIpInput");
-        auto *serverPort = window.findChild<QSpinBox *>("serverPortInput");
-        auto *listenPort = window.findChild<QSpinBox *>("localListenPortInput");
-        auto *prepare = window.findChild<QPushButton *>("prepareButton");
-        auto *start = window.findChild<QPushButton *>("startTransparentDemoButton");
-        auto *stop = window.findChild<QPushButton *>("stopTransparentDemoButton");
-        auto *status = window.findChild<QLineEdit *>("transparentDemoStatus");
-        QVERIFY(interfaces && client && server && serverPort && listenPort && prepare && start &&
-                stop && status);
-
-        const int row = interfaces->findData(interfaceName->first);
-        QVERIFY(row >= 0);
-        interfaces->setCurrentIndex(row);
-        client->setText(QStringLiteral("192.0.2.10"));
-        server->setText(QStringLiteral("192.0.2.30"));
-        serverPort->setValue(18081);
-        listenPort->setValue(0);
-        prepare->click();
-        QCOMPARE(controller.state(), SessionController::State::Ready);
-        QVERIFY(start->isEnabled());
-
-        start->click();
-        QVERIFY2(status->text().startsWith(QStringLiteral("Ready:")), qPrintable(status->text()));
-        QVERIFY(status->text().contains(QStringLiteral("interface=") + interfaceName->first));
-        QVERIFY(status->text().contains(QStringLiteral("client=192.0.2.10")));
-        QVERIFY(status->text().contains(QStringLiteral("server=192.0.2.30:18081")));
-        QVERIFY(status->text().contains(QStringLiteral("listener=") + interfaceName->second + ":"));
-        QVERIFY(!status->text().contains(QStringLiteral("secret"), Qt::CaseInsensitive));
-        QVERIFY(!start->isEnabled());
-        QVERIFY(stop->isEnabled());
-
-        const auto listenerPortMatch =
-            QRegularExpression(QStringLiteral("listener=%1:(\\d+)")
-                                   .arg(QRegularExpression::escape(interfaceName->second)))
-                .match(status->text());
-        QVERIFY(listenerPortMatch.hasMatch());
-        const auto listenerPort = listenerPortMatch.captured(1).toUShort();
-        QVERIFY(listenerPort > 0);
-        const auto statusTuple =
-            QStringLiteral("interface=%1 client=192.0.2.10 server=192.0.2.30:18081 "
-                           "listener=%3:%2")
-                .arg(interfaceName->first, QString::number(listenerPort), interfaceName->second);
-        QCOMPARE(status->text(), QStringLiteral("Ready: ") + statusTuple);
-
-        stop->click();
-        QCOMPARE(status->text(), QStringLiteral("Transparent lab demo: stopped"));
-        QVERIFY(start->isEnabled());
-        QVERIFY(!stop->isEnabled());
-        QTcpSocket socket;
-        socket.connectToHost(QHostAddress(interfaceName->second), listenerPort);
-        if (socket.waitForConnected(250)) {
-            socket.write(
-                "GET /api/generate HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
-            socket.waitForBytesWritten(250);
-            QVERIFY(!socket.waitForReadyRead(250));
-        }
+        auto *tabs = window.findChild<QTabWidget *>();
+        QVERIFY(tabs);
+        QVERIFY(!window.findChild<QPushButton *>("startTransparentDemoButton"));
+        QVERIFY(!window.findChild<QPushButton *>("stopTransparentDemoButton"));
+        QVERIFY(!window.findChild<QLineEdit *>("transparentDemoStatus"));
+        QVERIFY(!window.findChild<QCheckBox *>("localDeviceInput"));
+        QCOMPARE(tabs->tabText(1), QStringLiteral("Requests"));
+        QCOMPARE(tabs->tabText(2), QStringLiteral("Modify settings"));
+        QVERIFY(window.findChild<QListWidget *>("observedRequests"));
+        QVERIFY(window.findChild<QComboBox *>("interceptionModeInput"));
     }
 
     void pfRulesUseBoundListenerPortAndExactClientTuple() {

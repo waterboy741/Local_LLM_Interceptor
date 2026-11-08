@@ -160,15 +160,9 @@ MainWindow::MainWindow(SessionController *controller, QWidget *parent)
     auto *configPage = new QWidget(tabs);
     auto *layout = new QVBoxLayout(configPage);
     tabs->addTab(configPage, "Configuration");
-    layout->addWidget(
-        new QLabel("Prepare configuration, then explicitly start the local Observe proxy.", panel));
-    auto *localDevice = new QCheckBox("Proxy this device", panel);
-    localDevice->setObjectName("localDeviceInput");
-    layout->addWidget(localDevice);
-    auto *localHelp =
-        new QLabel("The proxy only receives requests sent to its displayed base URL.", panel);
-    localHelp->setWordWrap(true);
-    layout->addWidget(localHelp);
+    layout->addWidget(new QLabel("Prepare a remote-client proxy configuration, then explicitly "
+                                 "start the Observe proxy.",
+                                 panel));
     auto *form = new QFormLayout;
     interface_ = new QComboBox(panel);
     interface_->setPlaceholderText("No network interfaces available");
@@ -191,7 +185,7 @@ MainWindow::MainWindow(SessionController *controller, QWidget *parent)
     auto *refresh = new QPushButton("Refresh", interfaceRow);
     refresh->setObjectName("refreshInterfacesButton");
     interfaceLayout->addWidget(refresh);
-    form->addRow("Research interface", interfaceRow);
+    form->addRow("Mac interface", interfaceRow);
     form->addRow("Client IPv4", client_);
     form->addRow("LLM IPv4", server_);
     form->addRow("LLM TCP port", port_);
@@ -201,7 +195,7 @@ MainWindow::MainWindow(SessionController *controller, QWidget *parent)
     listenPort_->setValue(11434);
     listenPort_->setButtonSymbols(QAbstractSpinBox::NoButtons);
     listenPort_->setSpecialValueText("Automatic");
-    form->addRow("Proxy listen port (local or selected interface)", listenPort_);
+    form->addRow("Proxy listen port", listenPort_);
     form->addRow("API paths (comma separated)", paths_);
     auto *historyLimit = new QSpinBox(panel);
     historyLimit->setObjectName("historyRecordLimitInput");
@@ -233,23 +227,6 @@ MainWindow::MainWindow(SessionController *controller, QWidget *parent)
     startProxy->setObjectName("startObserveButton");
     startProxy->setEnabled(false);
     layout->addWidget(startProxy);
-    auto *startTransparentDemo = new QPushButton("Start Transparent lab demo", panel);
-    startTransparentDemo->setObjectName("startTransparentDemoButton");
-    startTransparentDemo->setEnabled(false);
-    layout->addWidget(startTransparentDemo);
-    auto *stopTransparentDemo = new QPushButton("Stop Transparent lab demo", panel);
-    stopTransparentDemo->setObjectName("stopTransparentDemoButton");
-    stopTransparentDemo->setEnabled(false);
-    layout->addWidget(stopTransparentDemo);
-    auto *transparentHelp = new QLabel("Lab only: starts a LAN listener for the selected "
-                                       "client. It does not change routing or PF.",
-                                       panel);
-    transparentHelp->setWordWrap(true);
-    layout->addWidget(transparentHelp);
-    transparentDemoStatus_ = new QLineEdit("Transparent lab demo: stopped", panel);
-    transparentDemoStatus_->setObjectName("transparentDemoStatus");
-    transparentDemoStatus_->setReadOnly(true);
-    layout->addWidget(transparentDemoStatus_);
     auto *requestPage = new QWidget(tabs);
     auto *requestLayout = new QVBoxLayout(requestPage);
     tabs->addTab(requestPage, "Requests");
@@ -706,12 +683,6 @@ MainWindow::MainWindow(SessionController *controller, QWidget *parent)
         showRequest();
     });
     poll->start();
-    connect(poll, &QTimer::timeout, this, [this] {
-        if (transparentDemoActive_)
-            transparentDemoStatus_->setText(
-                (proxy_.transparentReadiness() ? "Ready: " : "Not ready: ") +
-                transparentDemoTuple_);
-    });
     connect(requests_, &QListWidget::currentItemChanged, this,
             [showRequest](QListWidgetItem *, QListWidgetItem *) { showRequest(); });
     connect(exportArchive, &QPushButton::clicked, this, [this, summary] {
@@ -775,7 +746,7 @@ MainWindow::MainWindow(SessionController *controller, QWidget *parent)
         summary->setText("Replay cleared.");
     });
     connect(startProxy, &QPushButton::clicked, this,
-            [this, startProxy, startTransparentDemo, applySettings, historyLimit, historyMemory] {
+            [this, startProxy, applySettings, historyLimit, historyMemory] {
                 if (!applySettings())
                     return;
                 const auto config = controller_->config();
@@ -788,122 +759,33 @@ MainWindow::MainWindow(SessionController *controller, QWidget *parent)
                     static_cast<std::size_t>(historyMemory->value()) * 1024 * 1024;
                 // A first Ollama request may load the model before sending response headers.
                 options.timeoutMs = 120000;
-                const bool remoteDevice = !config->interfaceName.isEmpty();
-                if (remoteDevice) {
-                    const auto address = usableInterfaceIPv4(config->interfaceName);
-                    if (!address) {
-                        status_->setText("The selected interface is inactive or has no usable "
-                                         "IPv4 address. Refresh interfaces and try again.");
-                        return;
-                    }
-                    options.listenAddress = *address;
-                    options.allowedClientIp = config->clientIp;
+                const auto address = usableInterfaceIPv4(config->interfaceName);
+                if (!address) {
+                    status_->setText("The selected interface is inactive or has no usable "
+                                     "IPv4 address. Refresh interfaces and try again.");
+                    return;
                 }
+                options.listenAddress = *address;
+                options.allowedClientIp = config->clientIp;
                 if (proxy_.start(*config, options)) {
                     const QString url =
                         QString("http://%1:%2").arg(options.listenAddress).arg(proxy_.listenPort());
-                    status_->setText(remoteDevice
-                                         ? QString("Proxy listening at %1 — set the remote "
-                                                   "OpenCode Ollama base URL to this Mac LAN "
-                                                   "address. This does not redirect requests to "
-                                                   "the unchanged server address.")
-                                               .arg(url)
-                                         : QString("Local proxy listening at %1 — set this "
-                                                   "device's Ollama base URL here")
-                                               .arg(url));
+                    status_->setText(QString("Proxy listening at %1 — set the remote client's "
+                                             "Ollama base URL to this Mac LAN address. Requests "
+                                             "sent to the unchanged server address are not "
+                                             "redirected.")
+                                         .arg(url));
                     startProxy->setEnabled(false);
-                    startTransparentDemo->setEnabled(false);
                     listenPort_->setEnabled(false);
                 } else
                     status_->setText(
-                        "Could not start the local proxy. Clear any loaded replay, then check "
+                        "Could not start the proxy. Clear any loaded replay, then check "
                         "the selected endpoint and listener port.");
             });
-    connect(
-        startTransparentDemo, &QPushButton::clicked, this,
-        [this, startProxy, startTransparentDemo, stopTransparentDemo, applySettings, historyLimit,
-         historyMemory] {
-            if (!applySettings())
-                return;
-            const auto prepared = controller_->config();
-            if (!prepared || prepared->interfaceName.isEmpty()) {
-                transparentDemoStatus_->setText(
-                    "Transparent lab demo: select a research interface and client IPv4.");
-                return;
-            }
-            SessionConfig config = *prepared;
-            config.explicitProxy = false;
-            if (!config.validate().isEmpty()) {
-                transparentDemoStatus_->setText(
-                    "Transparent lab demo: invalid client or server tuple.");
-                return;
-            }
-            ProxyOptions options;
-            options.transparentRedirect = true;
-            const auto address = usableInterfaceIPv4(config.interfaceName);
-            if (!address) {
-                transparentDemoStatus_->setText(
-                    "Transparent lab demo: selected interface has no usable IPv4.");
-                return;
-            }
-            options.listenAddress = *address;
-            options.allowedClientIp = config.clientIp;
-            options.listenPort = listenPort_->value();
-            options.timeoutMs = 120000;
-            options.maxHistory = static_cast<std::size_t>(historyLimit->value());
-            options.maxHistoryBytes =
-                static_cast<std::size_t>(historyMemory->value()) * 1024 * 1024;
-            if (!proxy_.start(config, options)) {
-                transparentDemoStatus_->setText("Transparent lab demo: listener failed. Check the "
-                                                "selected interface and port.");
-                return;
-            }
-            transparentDemoActive_ = true;
-            const auto readiness = proxy_.transparentReadiness();
-            if (!readiness) {
-                proxy_.stop();
-                transparentDemoActive_ = false;
-                transparentDemoStatus_->setText("Transparent lab demo: listener not ready.");
-                return;
-            }
-            transparentDemoTuple_ =
-                QString("interface=%1 client=%2 server=%3:%4 listener=%5:%6")
-                    .arg(readiness->interfaceName(), readiness->allowedClientIp(),
-                         readiness->upstreamServerIp())
-                    .arg(readiness->upstreamServerPort())
-                    .arg(readiness->listenAddress())
-                    .arg(readiness->listenerPort());
-            transparentDemoStatus_->setText("Ready: " + transparentDemoTuple_);
-            startProxy->setEnabled(false);
-            startTransparentDemo->setEnabled(false);
-            stopTransparentDemo->setEnabled(true);
-            listenPort_->setEnabled(false);
-            status_->setText(
-                "Transparent lab listener ready; routing and PF require separate operator action.");
-        });
-    connect(stopTransparentDemo, &QPushButton::clicked, this,
-            [this, startProxy, startTransparentDemo, stopTransparentDemo] {
-                proxy_.stop();
-                transparentDemoActive_ = false;
-                transparentDemoTuple_.clear();
-                transparentDemoStatus_->setText("Transparent lab demo: stopped");
-                stopTransparentDemo->setEnabled(false);
-                const bool ready = controller_->state() == SessionController::State::Ready;
-                startProxy->setEnabled(ready);
-                startTransparentDemo->setEnabled(ready &&
-                                                 !controller_->config()->interfaceName.isEmpty());
-                listenPort_->setEnabled(!ready);
-                status_->setText("Configuration prepared — no network changes");
-            });
     connect(controller_, &SessionController::stateChanged, this,
-            [this, startProxy, startTransparentDemo, stopTransparentDemo, displayedRequest,
-             summary](SessionController::State state) {
+            [this, startProxy, displayedRequest, summary](SessionController::State state) {
                 if (state == SessionController::State::Stopping) {
                     proxy_.stop();
-                    transparentDemoActive_ = false;
-                    transparentDemoTuple_.clear();
-                    transparentDemoStatus_->setText("Transparent lab demo: stopped");
-                    stopTransparentDemo->setEnabled(false);
                     proxy_.clearOfflineReplay();
                     *displayedRequest = 0;
                     requests_->clear();
@@ -914,9 +796,6 @@ MainWindow::MainWindow(SessionController *controller, QWidget *parent)
                 }
                 startProxy->setEnabled(state == SessionController::State::Ready &&
                                        proxy_.listenPort() == 0);
-                startTransparentDemo->setEnabled(
-                    state == SessionController::State::Ready && proxy_.listenPort() == 0 &&
-                    controller_->config() && !controller_->config()->interfaceName.isEmpty());
                 listenPort_->setEnabled(state == SessionController::State::Idle);
             });
     auto *about = menuBar()->addAction("About / License");
@@ -925,7 +804,7 @@ MainWindow::MainWindow(SessionController *controller, QWidget *parent)
                            "Copyright © 2026 waterboy741\nGPL-3.0-only\nSource and license: "
                            "repository LICENSE and docs/LICENSING.md");
     });
-    const auto refreshInterfaces = [this, prepare, localDevice] {
+    const auto refreshInterfaces = [this, prepare] {
         const QString previous = interface_->currentData().toString();
         interface_->clear();
         for (const auto &networkInterface : QNetworkInterface::allInterfaces()) {
@@ -940,7 +819,7 @@ MainWindow::MainWindow(SessionController *controller, QWidget *parent)
         if (preserved >= 0)
             interface_->setCurrentIndex(preserved);
         prepare->setEnabled(controller_->state() == SessionController::State::Idle &&
-                            (localDevice->isChecked() || interface_->count() > 0));
+                            interface_->count() > 0);
         status_->setText(
             interface_->count() == 0
                 ? "No network interfaces available. Refresh after an interface becomes available."
@@ -948,35 +827,11 @@ MainWindow::MainWindow(SessionController *controller, QWidget *parent)
     };
     connect(refresh, &QPushButton::clicked, this, refreshInterfaces);
     refreshInterfaces();
-    const auto updateLocalMode = [this, localDevice, localHelp, prepare, refresh] {
-        const bool idle = controller_->state() == SessionController::State::Idle;
-        const bool local = localDevice->isChecked();
-        interface_->setEnabled(idle && !local);
-        refresh->setEnabled(idle && !local);
-        client_->setEnabled(idle && !local);
-        prepare->setEnabled(idle && (local || interface_->count() > 0));
-        localHelp->setText(local ? "For this device, set the Ollama base URL to the listener shown "
-                                   "after Start."
-                                 : "For a remote device, set its client IPv4 and select the Mac's "
-                                   "active interface. After Start, set OpenCode's Ollama base URL "
-                                   "to the LAN address shown.");
-        if (idle && local) {
-            if (server_->text().isEmpty())
-                server_->setText("127.0.0.1");
-            status_->setText(
-                "This device — prepare, start, then update your client's Ollama base URL.");
-        }
-    };
-    connect(localDevice, &QCheckBox::toggled, this, [updateLocalMode] { updateLocalMode(); });
-    updateLocalMode();
-    connect(prepare, &QPushButton::clicked, this, [this, localDevice] {
-        if (localDevice->isChecked() && QHostAddress(server_->text()).isLoopback() &&
-            listenPort_->value() == port_->value())
+    connect(prepare, &QPushButton::clicked, this, [this] {
+        if (QHostAddress(server_->text()).isLoopback() && listenPort_->value() == port_->value())
             listenPort_->setValue(0);
-        SessionConfig config{localDevice->isChecked() ? QString()
-                                                      : interface_->currentData().toString(),
-                             localDevice->isChecked() ? QString("127.0.0.1") : client_->text(),
-                             server_->text(), port_->value(), paths_->text().split(',')};
+        SessionConfig config{interface_->currentData().toString(), client_->text(), server_->text(),
+                             port_->value(), paths_->text().split(',')};
         config.explicitProxy = true;
         auto errors = config.validate();
         if (QHostAddress(config.serverIp).isLoopback() && listenPort_->value() != 0 &&
@@ -991,18 +846,16 @@ MainWindow::MainWindow(SessionController *controller, QWidget *parent)
     });
     connect(stop, &QPushButton::clicked, controller_, &SessionController::stop);
     connect(controller_, &SessionController::stateChanged, this,
-            [this, prepare, refresh, localDevice, updateLocalMode](SessionController::State state) {
+            [this, prepare, refresh](SessionController::State state) {
                 const bool idle = state == SessionController::State::Idle;
                 interface_->setEnabled(idle);
                 refresh->setEnabled(idle);
                 for (auto *input : {client_, server_, paths_})
                     input->setEnabled(idle);
                 port_->setEnabled(idle);
-                localDevice->setEnabled(idle);
                 prepare->setEnabled(idle && interface_->count() > 0);
                 status_->setText(idle ? "Idle — no network changes"
                                       : "Configuration prepared — no network changes");
-                updateLocalMode();
             });
     setCentralWidget(panel);
     resize(680, 660);

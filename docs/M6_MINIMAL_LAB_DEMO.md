@@ -1,5 +1,7 @@
 # Minimal lab demo plan
 
+**Historical plan:** The GUI instructions below describe the earlier lab-demo UI. The current GUI no longer has the Transparent lab demo start/status controls. `ProxyServer` transparent and loopback APIs remain available to offline tests and future helper work; GUI-specific steps in this plan are not steps for the current application.
+
 Goal: record one OpenCode request from the Ubuntu client to the **unchanged** Ollama URL (`192.168.1.141:11434`) passing through `llm_interceptor` on the research Mac, appearing in its GUI, reaching Ollama, and returning a response. This is a bounded, manually operated lab proof, not a claim that the M6 product is complete. Reconfirm all addresses, interface names, MACs, and host permissions at the lab before starting.
 
 ## Fast fallback: explicit proxy (already demonstrated)

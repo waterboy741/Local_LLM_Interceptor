@@ -23,6 +23,9 @@ class MainWindow : public QMainWindow {
     QLineEdit *client_, *server_, *paths_;
     QSpinBox *port_;
     QLabel *status_;
+    QLineEdit *transparentDemoStatus_;
+    bool transparentDemoActive_ = false;
+    QString transparentDemoTuple_;
     ProxyServer proxy_;
     QSpinBox *listenPort_;
     QListWidget *requests_;

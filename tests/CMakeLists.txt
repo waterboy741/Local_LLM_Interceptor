@@ -19,6 +19,15 @@ target_link_libraries(m6_transparent_proxy_readiness_tests PRIVATE
 add_test(NAME m6_transparent_proxy_readiness COMMAND m6_transparent_proxy_readiness_tests)
 set_tests_properties(m6_transparent_proxy_readiness PROPERTIES TIMEOUT 30)
 
+qt_add_executable(m6_transparent_lab_demo_tests M6TransparentLabDemoTests.cpp)
+target_link_libraries(m6_transparent_lab_demo_tests PRIVATE
+    interceptor_gui interceptor_proxy interceptor_network Qt6::Test)
+add_test(NAME m6_transparent_lab_demo COMMAND m6_transparent_lab_demo_tests)
+set_tests_properties(m6_transparent_lab_demo PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+    TIMEOUT 60
+)
+
 qt_add_executable(m6_transparent_proxy_probe_tests M6TransparentProxyProbeTests.cpp)
 target_link_libraries(m6_transparent_proxy_probe_tests PRIVATE interceptor_proxy Qt6::Test)
 add_test(NAME m6_transparent_proxy_probe COMMAND m6_transparent_proxy_probe_tests)

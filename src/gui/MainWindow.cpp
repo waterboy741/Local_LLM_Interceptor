@@ -233,6 +233,23 @@ MainWindow::MainWindow(SessionController *controller, QWidget *parent)
     startProxy->setObjectName("startObserveButton");
     startProxy->setEnabled(false);
     layout->addWidget(startProxy);
+    auto *startTransparentDemo = new QPushButton("Start Transparent lab demo", panel);
+    startTransparentDemo->setObjectName("startTransparentDemoButton");
+    startTransparentDemo->setEnabled(false);
+    layout->addWidget(startTransparentDemo);
+    auto *stopTransparentDemo = new QPushButton("Stop Transparent lab demo", panel);
+    stopTransparentDemo->setObjectName("stopTransparentDemoButton");
+    stopTransparentDemo->setEnabled(false);
+    layout->addWidget(stopTransparentDemo);
+    auto *transparentHelp = new QLabel("Lab only: starts a loopback listener for the selected "
+                                       "client. It does not change routing or PF.",
+                                       panel);
+    transparentHelp->setWordWrap(true);
+    layout->addWidget(transparentHelp);
+    transparentDemoStatus_ = new QLineEdit("Transparent lab demo: stopped", panel);
+    transparentDemoStatus_->setObjectName("transparentDemoStatus");
+    transparentDemoStatus_->setReadOnly(true);
+    layout->addWidget(transparentDemoStatus_);
     auto *requestPage = new QWidget(tabs);
     auto *requestLayout = new QVBoxLayout(requestPage);
     tabs->addTab(requestPage, "Requests");
@@ -689,6 +706,12 @@ MainWindow::MainWindow(SessionController *controller, QWidget *parent)
         showRequest();
     });
     poll->start();
+    connect(poll, &QTimer::timeout, this, [this] {
+        if (transparentDemoActive_)
+            transparentDemoStatus_->setText(
+                (proxy_.transparentReadiness() ? "Ready: " : "Not ready: ") +
+                transparentDemoTuple_);
+    });
     connect(requests_, &QListWidget::currentItemChanged, this,
             [showRequest](QListWidgetItem *, QListWidgetItem *) { showRequest(); });
     connect(exportArchive, &QPushButton::clicked, this, [this, summary] {
@@ -752,7 +775,7 @@ MainWindow::MainWindow(SessionController *controller, QWidget *parent)
         summary->setText("Replay cleared.");
     });
     connect(startProxy, &QPushButton::clicked, this,
-            [this, startProxy, applySettings, historyLimit, historyMemory] {
+            [this, startProxy, startTransparentDemo, applySettings, historyLimit, historyMemory] {
                 if (!applySettings())
                     return;
                 const auto config = controller_->config();
@@ -789,16 +812,92 @@ MainWindow::MainWindow(SessionController *controller, QWidget *parent)
                                                    "device's Ollama base URL here")
                                                .arg(url));
                     startProxy->setEnabled(false);
+                    startTransparentDemo->setEnabled(false);
                     listenPort_->setEnabled(false);
                 } else
                     status_->setText(
                         "Could not start the local proxy. Clear any loaded replay, then check "
                         "the selected endpoint and listener port.");
             });
+    connect(
+        startTransparentDemo, &QPushButton::clicked, this,
+        [this, startProxy, startTransparentDemo, stopTransparentDemo, applySettings, historyLimit,
+         historyMemory] {
+            if (!applySettings())
+                return;
+            const auto prepared = controller_->config();
+            if (!prepared || prepared->interfaceName.isEmpty()) {
+                transparentDemoStatus_->setText(
+                    "Transparent lab demo: select a research interface and client IPv4.");
+                return;
+            }
+            SessionConfig config = *prepared;
+            config.explicitProxy = false;
+            if (!config.validate().isEmpty()) {
+                transparentDemoStatus_->setText(
+                    "Transparent lab demo: invalid client or server tuple.");
+                return;
+            }
+            ProxyOptions options;
+            options.transparentRedirect = true;
+            options.listenAddress = "127.0.0.1";
+            options.allowedClientIp = config.clientIp;
+            options.listenPort = listenPort_->value();
+            options.timeoutMs = 120000;
+            options.maxHistory = static_cast<std::size_t>(historyLimit->value());
+            options.maxHistoryBytes =
+                static_cast<std::size_t>(historyMemory->value()) * 1024 * 1024;
+            if (!proxy_.start(config, options)) {
+                transparentDemoStatus_->setText("Transparent lab demo: listener failed. Check the "
+                                                "selected interface and port.");
+                return;
+            }
+            transparentDemoActive_ = true;
+            const auto readiness = proxy_.transparentReadiness();
+            if (!readiness) {
+                proxy_.stop();
+                transparentDemoActive_ = false;
+                transparentDemoStatus_->setText("Transparent lab demo: listener not ready.");
+                return;
+            }
+            transparentDemoTuple_ =
+                QString("interface=%1 client=%2 server=%3:%4 listener=%5:%6")
+                    .arg(readiness->interfaceName(), readiness->allowedClientIp(),
+                         readiness->upstreamServerIp())
+                    .arg(readiness->upstreamServerPort())
+                    .arg(readiness->listenAddress())
+                    .arg(readiness->listenerPort());
+            transparentDemoStatus_->setText("Ready: " + transparentDemoTuple_);
+            startProxy->setEnabled(false);
+            startTransparentDemo->setEnabled(false);
+            stopTransparentDemo->setEnabled(true);
+            listenPort_->setEnabled(false);
+            status_->setText(
+                "Transparent lab listener ready; routing and PF require separate operator action.");
+        });
+    connect(stopTransparentDemo, &QPushButton::clicked, this,
+            [this, startProxy, startTransparentDemo, stopTransparentDemo] {
+                proxy_.stop();
+                transparentDemoActive_ = false;
+                transparentDemoTuple_.clear();
+                transparentDemoStatus_->setText("Transparent lab demo: stopped");
+                stopTransparentDemo->setEnabled(false);
+                const bool ready = controller_->state() == SessionController::State::Ready;
+                startProxy->setEnabled(ready);
+                startTransparentDemo->setEnabled(ready &&
+                                                 !controller_->config()->interfaceName.isEmpty());
+                listenPort_->setEnabled(!ready);
+                status_->setText("Configuration prepared — no network changes");
+            });
     connect(controller_, &SessionController::stateChanged, this,
-            [this, startProxy, displayedRequest, summary](SessionController::State state) {
+            [this, startProxy, startTransparentDemo, stopTransparentDemo, displayedRequest,
+             summary](SessionController::State state) {
                 if (state == SessionController::State::Stopping) {
                     proxy_.stop();
+                    transparentDemoActive_ = false;
+                    transparentDemoTuple_.clear();
+                    transparentDemoStatus_->setText("Transparent lab demo: stopped");
+                    stopTransparentDemo->setEnabled(false);
                     proxy_.clearOfflineReplay();
                     *displayedRequest = 0;
                     requests_->clear();
@@ -807,7 +906,11 @@ MainWindow::MainWindow(SessionController *controller, QWidget *parent)
                     messageDetails_->clear();
                     summary->setText("No retained requests");
                 }
-                startProxy->setEnabled(state == SessionController::State::Ready);
+                startProxy->setEnabled(state == SessionController::State::Ready &&
+                                       proxy_.listenPort() == 0);
+                startTransparentDemo->setEnabled(
+                    state == SessionController::State::Ready && proxy_.listenPort() == 0 &&
+                    controller_->config() && !controller_->config()->interfaceName.isEmpty());
                 listenPort_->setEnabled(state == SessionController::State::Idle);
             });
     auto *about = menuBar()->addAction("About / License");

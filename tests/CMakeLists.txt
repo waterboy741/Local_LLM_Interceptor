@@ -162,6 +162,13 @@ add_test(NAME m6_mach_service_peer_authenticator
     COMMAND m6_mach_service_peer_authenticator_tests)
 set_tests_properties(m6_mach_service_peer_authenticator PROPERTIES TIMEOUT 30)
 
+qt_add_executable(m6_xpc_control_request_gate_tests M6XpcControlRequestGateTests.cpp)
+target_link_libraries(m6_xpc_control_request_gate_tests PRIVATE
+    interceptor_network Qt6::Test)
+add_test(NAME m6_xpc_control_request_gate
+    COMMAND m6_xpc_control_request_gate_tests)
+set_tests_properties(m6_xpc_control_request_gate PROPERTIES TIMEOUT 30)
+
 qt_add_executable(m6_unix_socket_command_transport_tests M6UnixSocketCommandTransportTests.cpp)
 target_link_libraries(m6_unix_socket_command_transport_tests PRIVATE interceptor_network Qt6::Test)
 add_test(NAME m6_unix_socket_command_transport COMMAND m6_unix_socket_command_transport_tests)

@@ -17,6 +17,18 @@ Use a temporary **static neighbor mapping on the Ubuntu client**, not continuous
 3. Add one deterministic GUI/proxy test for the demo option and one offline test that generates the exact scoped PF rules from the bound listener port. Existing transparent proxy and PF snapshot tests cover much of the underlying behavior.
 4. Prepare **review-only** PF candidate and rollback files using the existing attachment merge and syntax checker. Do not automate PF reload in the GUI. A human reviews the full candidate and current active PF state before the lab trial.
 
+After the GUI displays its actual `listener=127.0.0.1:<port>`, preview the session anchor rules with `pf_session_preview`. Supply fresh lab observations; the address and MAC values below are documentation examples only. The command validates the tuple through `SessionSnapshot`, runs `/sbin/pfctl -n -f -` for syntax only, prints rules to stdout only on success, and prints sanitized status JSON including the derived `llm_interceptor/<session-id>` anchor path to stderr. Its supplied readiness and attachment facts are preview assumptions, not live verification. It does not load or enable PF, change ARP, or write files.
+
+```sh
+./build/debug/pf_session_preview \
+  --interface en0 --client-ip 192.0.2.10 --server-ip 192.0.2.30 \
+  --server-port 11434 --listen-port 54321 --research-ip 192.0.2.20 \
+  --research-mac 02:00:00:00:00:20 --client-mac 02:00:00:00:00:10 \
+  --server-mac 02:00:00:00:00:30 --prefix-length 24 --session-id lab_demo
+```
+
+Replace every example value, especially `--listen-port`, with the current GUI tuple and freshly observed network facts. Review the resulting rules alongside the full PF attachment candidate and current active PF state before a human performs any privileged lab action.
+
 This is the complete pre-lab implementation scope for the short demo. Do not wait for an installed helper, production peer authentication, continuous ARP refresh, or automatic crash recovery. Mark the GUI option as lab-only and require an explicit Start click.
 
 ### Lab assets and operator actions

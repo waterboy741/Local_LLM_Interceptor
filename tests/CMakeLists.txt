@@ -28,6 +28,11 @@ set_tests_properties(m6_transparent_lab_demo PROPERTIES
     TIMEOUT 60
 )
 
+qt_add_executable(m6_pf_session_preview_cli_tests M6PfSessionPreviewCliTests.cpp)
+target_link_libraries(m6_pf_session_preview_cli_tests PRIVATE interceptor_network Qt6::Test)
+add_test(NAME m6_pf_session_preview_cli COMMAND m6_pf_session_preview_cli_tests)
+set_tests_properties(m6_pf_session_preview_cli PROPERTIES TIMEOUT 30)
+
 qt_add_executable(m6_transparent_proxy_probe_tests M6TransparentProxyProbeTests.cpp)
 target_link_libraries(m6_transparent_proxy_probe_tests PRIVATE interceptor_proxy Qt6::Test)
 add_test(NAME m6_transparent_proxy_probe COMMAND m6_transparent_proxy_probe_tests)

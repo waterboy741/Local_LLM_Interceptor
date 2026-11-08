@@ -172,10 +172,6 @@ class M6TransparentLabDemoTests final : public QObject {
                            "port 18081 -> 127.0.0.1 port %2\n"
                            "pass in quick on \"%1\" inet proto tcp from 192.0.2.10 to "
                            "127.0.0.1 port %2 flags S/SA keep state label \"llm_lab-demo-test\"\n"
-                           "pass in quick on \"%1\" inet from 192.0.2.10 to 192.0.2.30 "
-                           "keep state label \"llm_lab-demo-test\"\n"
-                           "pass in quick on \"%1\" inet from 192.0.2.30 to 192.0.2.10 "
-                           "keep state label \"llm_lab-demo-test\"\n"
                            "pass out quick on \"%1\" inet proto tcp from 192.0.2.20 to "
                            "192.0.2.30 port 18081 flags S/SA keep state label "
                            "\"llm_lab-demo-test\"\n")
@@ -183,6 +179,9 @@ class M6TransparentLabDemoTests final : public QObject {
         QCOMPARE(snapshot->proxyPort(), readiness->listenerPort());
         QCOMPARE(snapshot->facts().proxyListenPort, readiness->listenerPort());
         QCOMPARE(snapshot->pfRules(), expected);
+        QCOMPARE(snapshot->pfRules().count(QStringLiteral("pass in quick")), 1);
+        QVERIFY(!snapshot->pfRules().contains(QStringLiteral("inet from 192.0.2.10 to ")));
+        QVERIFY(!snapshot->pfRules().contains(QStringLiteral("inet from 192.0.2.30 to ")));
         QVERIFY(!snapshot->pfRules().contains(QStringLiteral("from any")));
         QVERIFY(!snapshot->pfRules().contains(QStringLiteral("flush")));
 

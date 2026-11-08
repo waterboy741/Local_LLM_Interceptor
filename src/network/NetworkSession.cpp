@@ -101,8 +101,6 @@ QString SessionSnapshot::pfRules() const {
     return QString("rdr on %1 inet proto tcp from %2 to %3 port %4 -> 127.0.0.1 port %5\n"
                    "pass in quick on %1 inet proto tcp from %2 to 127.0.0.1 port %5 flags S/SA "
                    "keep state label %6\n"
-                   "pass in quick on %1 inet from %2 to %3 keep state label %6\n"
-                   "pass in quick on %1 inet from %3 to %2 keep state label %6\n"
                    "pass out quick on %1 inet proto tcp from %7 to %3 port %4 flags S/SA keep "
                    "state label %6\n")
         .arg(iface, config_.clientIp, config_.serverIp, QString::number(config_.serverPort),

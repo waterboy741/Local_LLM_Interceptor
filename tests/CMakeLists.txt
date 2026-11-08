@@ -169,6 +169,14 @@ add_test(NAME m6_xpc_control_request_gate
     COMMAND m6_xpc_control_request_gate_tests)
 set_tests_properties(m6_xpc_control_request_gate PROPERTIES TIMEOUT 30)
 
+qt_add_executable(m6_xpc_read_only_service_listener_tests
+    M6XpcReadOnlyServiceListenerTests.cpp)
+target_link_libraries(m6_xpc_read_only_service_listener_tests PRIVATE
+    interceptor_network Qt6::Test)
+add_test(NAME m6_xpc_read_only_service_listener
+    COMMAND m6_xpc_read_only_service_listener_tests)
+set_tests_properties(m6_xpc_read_only_service_listener PROPERTIES TIMEOUT 30)
+
 qt_add_executable(m6_unix_socket_command_transport_tests M6UnixSocketCommandTransportTests.cpp)
 target_link_libraries(m6_unix_socket_command_transport_tests PRIVATE interceptor_network Qt6::Test)
 add_test(NAME m6_unix_socket_command_transport COMMAND m6_unix_socket_command_transport_tests)

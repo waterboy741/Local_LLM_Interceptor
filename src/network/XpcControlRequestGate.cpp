@@ -6,6 +6,7 @@
 namespace interceptor {
 namespace {
 constexpr size_t maximumOperationLength = 16;
+constexpr qsizetype maximumRequirementLength = 1024;
 
 bool fail(QString *error, const char *reason) {
     if (error)
@@ -18,6 +19,12 @@ bool fail(QString *error, const char *reason) {
 XpcControlRequestGate::XpcControlRequestGate(QByteArray trustedRequirement,
                                              XpcPeerCodeSignaturePolicy &policy)
     : trustedRequirement_(std::move(trustedRequirement)), policy_(policy) {}
+
+bool XpcControlRequestGate::isConfigured() const {
+    return !trustedRequirement_.isEmpty() &&
+           trustedRequirement_.size() <= maximumRequirementLength &&
+           !trustedRequirement_.contains('\0');
+}
 
 bool XpcControlRequestGate::parse(xpc_object_t message, XpcControlRequest *request,
                                   QString *error) const {

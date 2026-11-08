@@ -24,6 +24,7 @@ class XpcControlRequestGate final {
   public:
     XpcControlRequestGate(QByteArray trustedRequirement, XpcPeerCodeSignaturePolicy &policy);
 
+    bool isConfigured() const;
     bool parse(xpc_object_t message, XpcControlRequest *request, QString *error = nullptr) const;
 
   private:

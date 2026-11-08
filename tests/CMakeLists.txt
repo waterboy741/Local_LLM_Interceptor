@@ -143,6 +143,11 @@ target_link_libraries(m6_host_session_lease_tests PRIVATE interceptor_network Qt
 add_test(NAME m6_host_session_lease COMMAND m6_host_session_lease_tests)
 set_tests_properties(m6_host_session_lease PROPERTIES TIMEOUT 30)
 
+qt_add_executable(m6_installed_helper_bootstrap_tests M6InstalledHelperBootstrapTests.cpp)
+target_link_libraries(m6_installed_helper_bootstrap_tests PRIVATE interceptor_network Qt6::Test)
+add_test(NAME m6_installed_helper_bootstrap COMMAND m6_installed_helper_bootstrap_tests)
+set_tests_properties(m6_installed_helper_bootstrap PROPERTIES TIMEOUT 30)
+
 qt_add_executable(m6_pf_recovery_journal_tests M6PfRecoveryJournalTests.cpp)
 target_link_libraries(m6_pf_recovery_journal_tests PRIVATE interceptor_network Qt6::Test)
 add_test(NAME m6_pf_recovery_journal COMMAND m6_pf_recovery_journal_tests)

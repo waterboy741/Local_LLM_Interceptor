@@ -22,6 +22,11 @@ QByteArray secureClone(const QByteArray &bytes) {
     return QByteArray(bytes.constData(), bytes.size());
 }
 
+struct WipeOnExit final {
+    QByteArray &bytes;
+    ~WipeOnExit() { wipe(bytes); }
+};
+
 bool validPeer(const VerifiedPeer &peer) {
     return peer.transportAuthenticated && !peer.auditIdentity.isEmpty() &&
            peer.auditIdentity.size() <= 256;
@@ -38,7 +43,7 @@ void HelperHostCredentials::wipeCapability() noexcept { wipe(capability_); }
 
 struct LeasedHelperHost::State final : QObject {
     HostSessionLease lease;
-    TransparentProxyReadiness readiness;
+    std::optional<TransparentProxyReadiness> readiness;
     VerifiedPeer trustedPeer;
     SessionSnapshot permittedSnapshot;
     std::unique_ptr<PfAnchorRecoverySystemOperations> operations;
@@ -55,6 +60,10 @@ struct LeasedHelperHost::State final : QObject {
           SessionSnapshot snapshot)
         : lease(std::move(hostLease)), readiness(std::move(proxyReadiness)),
           trustedPeer(std::move(peer)), permittedSnapshot(std::move(snapshot)) {}
+
+    State(HostSessionLease hostLease, VerifiedPeer peer, SessionSnapshot snapshot)
+        : lease(std::move(hostLease)), trustedPeer(std::move(peer)),
+          permittedSnapshot(std::move(snapshot)) {}
 
     ~State() {
         Q_ASSERT(onOwnerThread());
@@ -147,6 +156,71 @@ std::unique_ptr<LeasedHelperHost> LeasedHelperHost::create(
     return std::unique_ptr<LeasedHelperHost>(new LeasedHelperHost(std::move(state)));
 }
 
+std::unique_ptr<LeasedHelperHost>
+LeasedHelperHost::createFromBootstrap(int trustedDirectoryFd, TrustedBootstrapHandoff bootstrap,
+                                      const VerifiedPeer &bootstrapPeer,
+                                      const BootstrapOperationsFactory &operationsFactory,
+                                      MonotonicClock monotonicClock, QString *error) {
+    const auto fail = [error](const QString &reason) -> std::unique_ptr<LeasedHelperHost> {
+        if (error)
+            *error = reason;
+        return {};
+    };
+    if (error)
+        error->clear();
+    if (!validPeer(bootstrapPeer))
+        return fail(QStringLiteral("trusted_bootstrap_peer_required"));
+    if (!operationsFactory || !monotonicClock)
+        return fail(QStringLiteral("helper_bootstrap_dependency_missing"));
+
+    const SessionSnapshot permittedSnapshot = bootstrap.snapshot();
+    QByteArray probeSecret = bootstrap.takeProbeSecret();
+    const WipeOnExit wipeProbeSecret{probeSecret};
+    if (probeSecret.size() != HelperSessionIdentity::capabilityRandomBytes) {
+        return fail(QStringLiteral("bootstrap_secret_invalid"));
+    }
+    auto lease = HostSessionLease::acquire(trustedDirectoryFd);
+    if (!lease.acquired() || !lease.descriptorHasCloseOnExec())
+        return fail(QStringLiteral("host_session_lease_unavailable"));
+
+    auto identity = HelperSessionIdentity::create();
+    if (!identity)
+        return fail(QStringLiteral("helper_identity_unavailable"));
+    std::unique_ptr<State> state;
+    try {
+        state = std::make_unique<State>(std::move(lease), bootstrapPeer, permittedSnapshot);
+        state->operations = operationsFactory(state->lease, state->permittedSnapshot, probeSecret);
+    } catch (...) {
+        return fail(QStringLiteral("helper_operations_creation_failed"));
+    }
+    if (!state->operations)
+        return fail(QStringLiteral("helper_operations_unavailable"));
+
+    QByteArray clientCapability = std::move(*identity).takeCapability();
+    if (clientCapability.size() != HelperSessionIdentity::capabilityRandomBytes) {
+        wipe(clientCapability);
+        return fail(QStringLiteral("helper_capability_unavailable"));
+    }
+    QByteArray dispatcherCapability;
+    try {
+        state->controlCapability = secureClone(clientCapability);
+        state->clientCapability = secureClone(clientCapability);
+        dispatcherCapability = secureClone(state->controlCapability);
+        state->dispatcher = std::make_unique<HelperDispatcher>(
+            *state->operations, state->permittedSnapshot, state->trustedPeer,
+            std::move(dispatcherCapability), nullptr, std::move(monotonicClock));
+        state->watchdog = std::make_unique<HelperWatchdog>(*state->dispatcher);
+    } catch (...) {
+        wipe(dispatcherCapability);
+        wipe(clientCapability);
+        return fail(QStringLiteral("helper_dispatcher_creation_failed"));
+    }
+    wipe(clientCapability);
+    if (!state->dispatcher->ready())
+        return fail(QStringLiteral("helper_dispatcher_not_ready"));
+    return std::unique_ptr<LeasedHelperHost>(new LeasedHelperHost(std::move(state)));
+}
+
 LeasedHelperHost::LeasedHelperHost(std::unique_ptr<State> state) : state_(std::move(state)) {}
 LeasedHelperHost::~LeasedHelperHost() {
     if (!state_)
@@ -177,7 +251,7 @@ bool LeasedHelperHost::start(QString *error) {
         return false;
     }
     state_->startAttempted = true;
-    if (!state_->readiness.isCurrent()) {
+    if (state_->readiness && !state_->readiness->isCurrent()) {
         if (error)
             *error = QStringLiteral("transparent_proxy_not_current");
         return false;
@@ -188,7 +262,7 @@ bool LeasedHelperHost::start(QString *error) {
             *error = QStringLiteral("trusted_clock_unavailable");
         return false;
     }
-    if (!state_->readiness.isCurrent()) {
+    if (state_->readiness && !state_->readiness->isCurrent()) {
         if (error)
             *error = QStringLiteral("transparent_proxy_not_current");
         return false;
@@ -252,7 +326,7 @@ bool LeasedHelperHost::dispatchOne(int connectedSocketFd, QString *error) {
             *error = QStringLiteral("helper_not_started_or_wrong_thread");
         return false;
     }
-    if (!state_->readiness.isCurrent()) {
+    if (state_->readiness && !state_->readiness->isCurrent()) {
         if (error)
             *error = QStringLiteral("transparent_proxy_not_current");
         (void)stop(nullptr);

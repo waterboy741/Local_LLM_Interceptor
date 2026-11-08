@@ -2,6 +2,7 @@
 #include "network/LeasedUnixHelperCommandListener.hpp"
 #include "network/PfAnchorOperations.hpp"
 #include "network/PfRecoveryJournal.hpp"
+#include "network/TrustedBootstrapHandoff.hpp"
 #include "network/UnixPeerCredentials.hpp"
 
 #include <QCoreApplication>
@@ -20,6 +21,11 @@
 #include <unistd.h>
 
 using namespace interceptor;
+
+class HelperHostFakeBootstrapAuthenticator final : public BootstrapPeerAuthenticator {
+  public:
+    bool authenticate(int, const QByteArray &) override { return true; }
+};
 
 class HelperHostFakeBackend final : public SystemOperations {
   public:
@@ -219,6 +225,33 @@ class M6LeasedHelperHostTests final : public QObject {
             qFatal("Cannot verify synthetic bootstrap peer");
         return *peer;
     }
+    static std::optional<TrustedBootstrapHandoff> transferBootstrap(const SessionSnapshot &snapshot,
+                                                                    const QByteArray &secret,
+                                                                    QString *error = nullptr) {
+        int sockets[2] = {-1, -1};
+        if (::socketpair(AF_UNIX, SOCK_STREAM, 0, sockets) != 0)
+            qFatal("Cannot create synthetic helper handoff socket pair");
+        HelperHostFakeBootstrapAuthenticator writerAuthenticator;
+        HelperHostFakeBootstrapAuthenticator receiverAuthenticator;
+        bool written = false;
+        QString writeError;
+        std::thread writer([&] {
+            written = writeBootstrapHandoff(sockets[0], writerAuthenticator,
+                                            QByteArrayLiteral("helper-code"), snapshot, secret,
+                                            &writeError);
+        });
+        auto handoff = receiveTrustedBootstrapHandoff(sockets[1], receiverAuthenticator,
+                                                      QByteArrayLiteral("gui-code"), error);
+        writer.join();
+        ::close(sockets[0]);
+        ::close(sockets[1]);
+        if (!written) {
+            if (error)
+                *error = writeError;
+            return std::nullopt;
+        }
+        return handoff;
+    }
     static LeasedHelperHost::OperationsFactory
     operationsFactory(HelperHostFakeBackend &backend, PfAnchorRecoveryCoordinator &coordinator) {
         return [&backend, &coordinator](const HostSessionLease &lease, const SessionSnapshot &) {
@@ -410,6 +443,97 @@ class M6LeasedHelperHostTests final : public QObject {
         QCOMPARE(error, QStringLiteral("helper_operations_unavailable"));
         auto leaseAfterFactoryFailure = HostSessionLease::acquire(directory.fd());
         QVERIFY(leaseAfterFactoryFailure.acquired());
+    }
+
+    void bootstrapAdoptionRejectsMissingProbeSecretBeforeOperations() {
+        HelperHostPrivateDirectory directory;
+        QVERIFY(directory.valid());
+        Dependencies deps(directory.fd());
+        QVERIFY(deps.recoveryJournal.valid());
+        const auto snapshot = makeSnapshot(QStringLiteral("handoff-missing-secret"));
+        QVERIFY(snapshot.has_value());
+        QString error;
+        auto handoff = transferBootstrap(*snapshot, QByteArray(32, 'p'), &error);
+        QVERIFY2(handoff.has_value(), qPrintable(error));
+        QCOMPARE(handoff->takeProbeSecret(), QByteArray(32, 'p'));
+
+        int factoryCalls = 0;
+        const LeasedHelperHost::BootstrapOperationsFactory factory =
+            [&factoryCalls](const HostSessionLease &, const SessionSnapshot &, const QByteArray &) {
+                ++factoryCalls;
+                return std::unique_ptr<PfAnchorRecoverySystemOperations>{};
+            };
+        const auto peer = kernelPeer();
+        auto host = LeasedHelperHost::createFromBootstrap(
+            directory.fd(), std::move(*handoff), peer, factory, [] { return qint64(10); }, &error);
+        QVERIFY(!host);
+        QVERIFY(!error.isEmpty());
+        QCOMPARE(factoryCalls, 0);
+        QVERIFY(deps.backend.calls.isEmpty());
+        auto leaseAfterFailure = HostSessionLease::acquire(directory.fd());
+        QVERIFY(leaseAfterFailure.acquired());
+    }
+
+    void bootstrapAdoptionUsesTransferredSnapshotAndReadinessSecretWithFakeOperations() {
+        HelperHostPrivateDirectory directory;
+        QVERIFY(directory.valid());
+        Dependencies deps(directory.fd());
+        QVERIFY(deps.recoveryJournal.valid());
+        const auto snapshot = makeSnapshot(QStringLiteral("handoff-adoption-session"));
+        QVERIFY(snapshot.has_value());
+        const QByteArray probeSecret(32, 'q');
+        QString error;
+        auto handoff = transferBootstrap(*snapshot, probeSecret, &error);
+        QVERIFY2(handoff.has_value(), qPrintable(error));
+
+        int factoryCalls = 0;
+        QByteArray observedSecret;
+        QString observedSessionId;
+        const LeasedHelperHost::BootstrapOperationsFactory factory =
+            [&factoryCalls, &observedSecret, &observedSessionId,
+             &deps](const HostSessionLease &lease, const SessionSnapshot &transferred,
+                    const QByteArray &secret) {
+                ++factoryCalls;
+                observedSecret = secret;
+                observedSessionId = transferred.sessionId();
+                if (!lease.acquired() || !lease.descriptorHasCloseOnExec())
+                    return std::unique_ptr<PfAnchorRecoverySystemOperations>{};
+                return std::make_unique<PfAnchorRecoverySystemOperations>(deps.backend, lease,
+                                                                          deps.coordinator);
+            };
+        const auto peer = kernelPeer();
+        auto host = LeasedHelperHost::createFromBootstrap(
+            directory.fd(), std::move(*handoff), peer, factory, [] { return qint64(100); }, &error);
+        QVERIFY2(host, qPrintable(error));
+        QVERIFY(error.isEmpty());
+        QCOMPARE(factoryCalls, 1);
+        QCOMPARE(observedSessionId, snapshot->sessionId());
+        QCOMPARE(observedSecret, probeSecret);
+        QCOMPARE(host->snapshot().sessionId(), snapshot->sessionId());
+        QCOMPARE(host->snapshot().anchor(), snapshot->anchor());
+        QVERIFY(deps.backend.calls.isEmpty()); // adoption itself does not start network work
+
+        QVERIFY2(host->start(&error), qPrintable(error));
+        auto credentials = host->takeCredentials();
+        QVERIFY(credentials.has_value());
+        QCOMPARE(credentials->sessionId(), snapshot->sessionId());
+        QCOMPARE(credentials->capability().size(), 32);
+        QVERIFY(credentials->capability() != probeSecret); // command authority is host generated
+        QByteArray response;
+        bool descriptorsOpen = false;
+        const auto heartbeat = wireCommand(1, credentials->capability(), host->snapshot().anchor());
+        QVERIFY(dispatchWire(*host, heartbeat, &response, &descriptorsOpen, &error));
+        QCOMPARE(response, QByteArray(1, char(1)));
+        QVERIFY(descriptorsOpen);
+        QCOMPARE(host->state(), NetworkSession::State::Active);
+
+        const auto stop = wireCommand(2, credentials->capability(), host->snapshot().anchor());
+        QVERIFY(dispatchWire(*host, stop, &response, &descriptorsOpen, &error));
+        QCOMPARE(response, QByteArray(1, char(1)));
+        QVERIFY(descriptorsOpen);
+        QCOMPARE(host->state(), NetworkSession::State::Idle);
+        QVERIFY(deps.runner.calls.contains(QStringLiteral("install")));
+        QVERIFY(deps.runner.calls.contains(QStringLiteral("remove")));
     }
 
     void bootstrapStartCredentialsHeartbeatStopAndLeaseLifetime() {

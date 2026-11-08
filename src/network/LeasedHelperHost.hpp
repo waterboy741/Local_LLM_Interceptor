@@ -3,6 +3,7 @@
 #include "HelperDispatcher.hpp"
 #include "HostSessionLease.hpp"
 #include "PfAnchorRecoverySystemOperations.hpp"
+#include "TrustedBootstrapHandoff.hpp"
 
 #include <functional>
 #include <memory>
@@ -42,6 +43,9 @@ class LeasedHelperHost final {
   public:
     using OperationsFactory = std::function<std::unique_ptr<PfAnchorRecoverySystemOperations>(
         const HostSessionLease &, const SessionSnapshot &)>;
+    using BootstrapOperationsFactory =
+        std::function<std::unique_ptr<PfAnchorRecoverySystemOperations>(
+            const HostSessionLease &, const SessionSnapshot &, const QByteArray &)>;
     using MonotonicClock = HelperDispatcher::MonotonicClock;
 
     static std::unique_ptr<LeasedHelperHost>
@@ -49,6 +53,20 @@ class LeasedHelperHost final {
            const TransparentProxyReadiness &readiness, const VerifiedPeer &bootstrapPeer,
            const OperationsFactory &operationsFactory, MonotonicClock monotonicClock,
            QString *error = nullptr);
+
+    // Helper-process bootstrap from a handoff already authenticated by the outer launcher.
+    // The caller must bind bootstrapPeer to the same GUI peer authenticated on the handoff socket;
+    // this API cannot establish that binding itself. The transferred snapshot is immutable input,
+    // and this overload cannot recheck GUI-owned ProxyServer readiness. The factory gets the
+    // one-time proxy probe secret only while assembling operations. It must not retain a copy
+    // unless it owns and wipes that copy; this host wipes its local copy on return.
+    // Production callers must make the pre-mutation gate a mandatory part of their operations
+    // composition. This overload does not itself establish readiness or authorize live mutation.
+    static std::unique_ptr<LeasedHelperHost>
+    createFromBootstrap(int trustedDirectoryFd, TrustedBootstrapHandoff bootstrap,
+                        const VerifiedPeer &bootstrapPeer,
+                        const BootstrapOperationsFactory &operationsFactory,
+                        MonotonicClock monotonicClock, QString *error = nullptr);
 
     LeasedHelperHost(const LeasedHelperHost &) = delete;
     LeasedHelperHost &operator=(const LeasedHelperHost &) = delete;

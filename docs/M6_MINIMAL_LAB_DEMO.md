@@ -17,15 +17,38 @@ Use a temporary **static neighbor mapping on the Ubuntu client**, not continuous
 3. Add one deterministic GUI/proxy test for the demo option and one offline test that generates the exact scoped PF rules from the bound listener port. Existing transparent proxy and PF snapshot tests cover much of the underlying behavior.
 4. Prepare **review-only** PF candidate and rollback files using the existing attachment merge and syntax checker. Do not automate PF reload in the GUI. A human reviews the full candidate and current active PF state before the lab trial.
 
+This is the complete pre-lab implementation scope for the short demo. Do not wait for an installed helper, production peer authentication, continuous ARP refresh, or automatic crash recovery. Mark the GUI option as lab-only and require an explicit Start click.
+
+### Lab assets and operator actions
+
+- Research Mac with administrator access, `en0` on the same Wi-Fi subnet, and an available loopback listener port.
+- Ubuntu client with sudo access for one neighbor entry, running OpenCode. Keep its Ollama URL at `http://192.168.1.141:11434` for the transparent clip.
+- Reachable Ollama server at `192.168.1.141:11434`, with a known working model warmed before the clip.
+- A fresh Mac `en0` MAC, Ubuntu interface name, and original server MAC observed in the lab. The prior ARP probe showed the Ubuntu mapping could change, but it did not prove packet delivery.
+- Before any PF or neighbor change, prepare the exact undo commands and have a second terminal open for rollback. The operator executes privileged commands; the app does not silently modify PF or Ubuntu networking.
+
 ### Lab sequence
 
 1. **Baseline:** on the Mac, confirm `en0` address/MAC and Ollama HTTP reachability; on Ubuntu, record the server's original neighbor MAC and confirm OpenCode succeeds directly. Record current PF status, main rules/attachments, and a backup of the configuration that would be changed. Use a warmed Ollama model to avoid first-request delay.
-2. **Listener:** start Transparent lab demo in Observe mode. Confirm its displayed loopback port and run a direct local HTTP check to the proxy before changing routes. Stop if the listener is not ready.
-3. **PF-only proof:** enable/attach only the dedicated `llm_interceptor/*` references and load one session anchor whose `rdr` matches `en0`, the Ubuntu client IP, Ollama IP, TCP port 11434, and the displayed listener port. Verify the active filter and translation references, owned anchor, and rule counters. Do not flush unrelated anchors or globally disable PF. A packet sent from the Mac itself is not evidence for inbound `en0` redirection.
-4. **One client packet path:** on Ubuntu, temporarily replace only the neighbor entry for `192.168.1.141` with the verified Mac `en0` MAC. First send a small synthetic HTTP request to the unchanged Ollama address and confirm it appears in the GUI and reaches the upstream. Then send one short OpenCode `/v1/chat/completions` request. Record the GUI request and response plus the client result.
+2. **Listener:** start Transparent lab demo in Observe mode. Confirm its displayed loopback port and use the existing authenticated listener probe to verify readiness. Ordinary loopback HTTP is deliberately rejected by the transparent listener's client allowlist, so a local `curl` to it is not a valid data-path check. Stop if the probe fails.
+3. **PF preparation:** enable/attach only the dedicated `llm_interceptor/*` references and load one session anchor whose `rdr` matches `en0`, the Ubuntu client IP, Ollama IP, TCP port 11434, and the displayed listener port. Verify that the active filter and translation references and owned anchor exist. Rule evaluation and counters require an inbound client packet in the next step. Do not flush unrelated anchors or globally disable PF. A packet sent from the Mac itself is not evidence for inbound `en0` redirection.
+4. **One client packet path:** after recording a ready-to-run neighbor rollback command, temporarily replace only the Ubuntu neighbor entry for `192.168.1.141` with the verified Mac `en0` MAC. First send a small synthetic HTTP request to the unchanged Ollama address and confirm the PF rule counter changes, the request appears in the GUI, and it reaches upstream. Then send one short OpenCode `/v1/chat/completions` request. Record the GUI request and response plus the client result.
 5. **Rollback immediately:** restore or delete the temporary Ubuntu neighbor override, verify the original server MAC is resolved again, remove and verify empty only the owned PF anchor, release only the PF enable reference acquired for this trial, restore the original PF attachment configuration if changed, and stop the listener. Confirm a direct OpenCode request still works.
 
-Every privileged command, backup path, exact MAC, session anchor name, and rollback command should be filled in **after** fresh lab observations and reviewed before execution. Do not hard-code stale MACs in a script or run a broad PF flush. If PF attach/reverse translation or the synthetic request fails, stop and roll back rather than proceeding to OpenCode.
+Every privileged command, backup path, exact MAC, session anchor name, and rollback command should be filled in **after** fresh lab observations and reviewed before execution. Do not hard-code stale MACs in a script or run a broad PF flush. If the listener probe, PF attachment, inbound counter, reverse translation, or synthetic request fails, stop and roll back rather than proceeding to OpenCode.
+
+### Go/no-go checkpoints
+
+| Checkpoint | Continue only when | If it fails |
+| --- | --- | --- |
+| Baseline | Direct Ollama request succeeds; original neighbor MAC and PF state are recorded | Do not start the transparent segment |
+| Listener | GUI displays a ready loopback listener and its authenticated probe succeeds | Stop listener; record explicit-proxy fallback |
+| PF setup | Both dedicated attachments and only the intended session anchor are active | Remove owned state; restore the saved PF configuration |
+| Synthetic client request | PF counter changes and the GUI plus Ollama see one request with a successful response | Restore Ubuntu neighbor first, then owned PF state |
+| OpenCode request | Unchanged URL succeeds and appears once in GUI | Stop after recording the failure; roll back |
+| Cleanup | Original neighbor mapping, unrelated PF state, and direct Ollama access are restored | Keep the demo marked incomplete and resolve cleanup before retry |
+
+The first recording can focus on Observe mode. Manual JSON modification is optional after the unmodified path succeeds; it should not be required for the minimum transparent proof.
 
 ### Recording and pass criteria
 

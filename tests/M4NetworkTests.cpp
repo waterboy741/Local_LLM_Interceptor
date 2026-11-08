@@ -325,13 +325,13 @@ class M4NetworkTests : public QObject {
         const auto rules = snapshot->pfRules();
         QVERIFY(rules.contains(
             "rdr on \"synthetic0\" inet proto tcp from 192.0.2.10 to 192.0.2.30 port 18081"));
-        QVERIFY(rules.contains("127.0.0.1 port 11434"));
+        QVERIFY(rules.contains("192.0.2.20 port 11434"));
         QVERIFY(!rules.contains("com.apple"));
         QVERIFY(!rules.contains("flush"));
         QVERIFY(!rules.contains("from any"));
         QCOMPARE(rules.count("pass in quick"), 1);
         QVERIFY(rules.contains("pass in quick on \"synthetic0\" inet proto tcp from "
-                               "192.0.2.10 to 127.0.0.1 port 11434"));
+                               "192.0.2.10 to 192.0.2.20 port 11434"));
         QVERIFY(!rules.contains("inet from 192.0.2.10 to 192.0.2.30"));
         QVERIFY(!rules.contains("inet from 192.0.2.30 to 192.0.2.10"));
         // Upstream originates from the research IP, so it cannot match the client-source rule.

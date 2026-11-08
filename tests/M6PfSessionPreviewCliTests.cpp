@@ -74,8 +74,8 @@ class M6PfSessionPreviewCliTests final : public QObject {
         const auto result = PfSessionPreviewCli::run(validArguments, runner);
         const QByteArray expectedRules(
             "rdr on \"en0\" inet proto tcp from 192.0.2.10 to 192.0.2.30 port 11434 -> "
-            "127.0.0.1 port 45678\n"
-            "pass in quick on \"en0\" inet proto tcp from 192.0.2.10 to 127.0.0.1 port "
+            "192.0.2.20 port 45678\n"
+            "pass in quick on \"en0\" inet proto tcp from 192.0.2.10 to 192.0.2.20 port "
             "45678 flags S/SA keep state label \"llm_demo_preview_1\"\n"
             "pass out quick on \"en0\" inet proto tcp from 192.0.2.20 to 192.0.2.30 port "
             "11434 flags S/SA keep state label \"llm_demo_preview_1\"\n");

@@ -11,6 +11,7 @@ struct TransparentProxyProbeTarget {
     QString upstreamIp;
     int upstreamPort = 0;
     int listenerPort = 0;
+    QString listenAddress;
 };
 
 // The secret and target must arrive through a separately authenticated bootstrap channel.

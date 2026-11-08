@@ -2,6 +2,7 @@
 #include <QString>
 #include <QStringList>
 #include <functional>
+#include <memory>
 #include <utility>
 namespace interceptor {
 struct SessionConfig {
@@ -14,10 +15,10 @@ struct SessionConfig {
     QStringList validate() const;
 };
 
-// Evidence that ProxyServer successfully bound its transparent loopback listener. It reports
-// configuration and bind readiness only; it does not establish upstream reachability or packet
-// delivery. It is point-in-time evidence; callers must revalidate it with ProxyServer immediately
-// before session activation. Instances can only be created by ProxyServer.
+// Evidence that ProxyServer successfully bound its transparent selected-interface listener. It
+// reports configuration and bind readiness only; it does not establish upstream reachability or
+// packet delivery. It is point-in-time evidence; callers must revalidate it with ProxyServer
+// immediately before session activation. Instances can only be created by ProxyServer.
 class TransparentProxyReadiness {
   public:
     const QString &interfaceName() const { return interfaceName_; }
@@ -48,6 +49,8 @@ class TransparentProxyReadiness {
     QString upstreamServerIp_;
     int listenerPort_ = 0;
     int upstreamServerPort_ = 0;
+    // Copies retain this bind lifetime; a new listener can never revive an old token.
+    std::shared_ptr<const char> listenerIdentity_ = std::make_shared<const char>(0);
     std::function<bool()> currentCheck_;
     friend class ProxyServer;
     friend class M6LeasedHelperHostTests;

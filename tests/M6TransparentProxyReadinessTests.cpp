@@ -12,7 +12,7 @@ using namespace interceptor;
 class M6TransparentProxyReadinessTests final : public QObject {
     Q_OBJECT
 
-    static std::optional<QString> activeInterfaceName() {
+    static std::optional<QPair<QString, QString>> activeInterfaceName() {
         for (const auto &networkInterface : QNetworkInterface::allInterfaces()) {
             const auto flags = networkInterface.flags();
             if (!flags.testFlag(QNetworkInterface::IsUp) ||
@@ -22,7 +22,7 @@ class M6TransparentProxyReadinessTests final : public QObject {
             for (const auto &entry : networkInterface.addressEntries())
                 if (entry.ip().protocol() == QAbstractSocket::IPv4Protocol &&
                     !entry.ip().isLoopback())
-                    return networkInterface.name();
+                    return QPair<QString, QString>{networkInterface.name(), entry.ip().toString()};
         }
         return std::nullopt;
     }
@@ -33,13 +33,33 @@ class M6TransparentProxyReadinessTests final : public QObject {
         return available;
     }
     static SessionConfig config(const QString &interfaceName) {
-        return {interfaceName, "192.0.2.10", "192.0.2.30", 18081, {"/api/generate", "/api/chat"},
-                false};
+        QString address;
+        for (const auto &entry :
+             QNetworkInterface::interfaceFromName(interfaceName).addressEntries())
+            if (entry.ip().protocol() == QAbstractSocket::IPv4Protocol &&
+                !entry.ip().isLoopback()) {
+                address = entry.ip().toString();
+                break;
+            }
+        const quint32 research = QHostAddress(address).toIPv4Address();
+        const quint32 base = research & 0xffff0000U;
+        const QString client =
+            QHostAddress(base | ((research & 0xffffU) == 10 ? 11U : 10U)).toString();
+        const QString server =
+            QHostAddress(base | ((research & 0xffffU) == 30 ? 31U : 30U)).toString();
+        return {interfaceName, client, server, 18081, {"/api/generate", "/api/chat"}, false};
     }
     static NetworkFacts factsFor(const SessionConfig &session) {
         NetworkFacts facts;
+        facts.prefixLength = 16;
         facts.interfaceName = session.interfaceName;
-        facts.researchIp = "192.0.2.20";
+        for (const auto &entry :
+             QNetworkInterface::interfaceFromName(session.interfaceName).addressEntries())
+            if (entry.ip().protocol() == QAbstractSocket::IPv4Protocol &&
+                !entry.ip().isLoopback()) {
+                facts.researchIp = entry.ip().toString();
+                break;
+            }
         facts.researchMac = "02:00:00:00:00:20";
         facts.clientMac = "02:00:00:00:00:10";
         facts.serverMac = "02:00:00:00:00:30";
@@ -57,9 +77,10 @@ class M6TransparentProxyReadinessTests final : public QObject {
         if (!loopbackListenerAvailable())
             QSKIP("This environment does not permit local loopback listeners");
 
-        const auto session = config(*interfaceName);
+        const auto session = config(interfaceName->first);
         ProxyOptions options;
         options.transparentRedirect = true;
+        options.listenAddress = interfaceName->second;
         options.allowedClientIp = session.clientIp;
         ProxyServer proxy;
         QVERIFY(proxy.start(session, options));
@@ -77,10 +98,11 @@ class M6TransparentProxyReadinessTests final : public QObject {
         QCOMPARE(snapshot->facts().proxyListenPort, proxy.listenPort());
         QCOMPARE(snapshot->proxyPort(), static_cast<int>(proxy.listenPort()));
         QVERIFY(snapshot->pfRules().contains(
-            QStringLiteral("rdr on \"%1\" inet proto tcp from %2 to %3 port %4 -> 127.0.0.1 "
+            QStringLiteral("rdr on \"%1\" inet proto tcp from %2 to %3 port %4 -> %6 "
                            "port %5")
                 .arg(session.interfaceName, session.clientIp, session.serverIp,
-                     QString::number(session.serverPort), QString::number(proxy.listenPort()))));
+                     QString::number(session.serverPort), QString::number(proxy.listenPort()),
+                     interfaceName->second)));
 
         proxy.stop();
         QVERIFY(!proxy.transparentReadiness().has_value());
@@ -94,9 +116,10 @@ class M6TransparentProxyReadinessTests final : public QObject {
         if (!loopbackListenerAvailable())
             QSKIP("This environment does not permit local loopback listeners");
 
-        const auto original = config(*interfaceName);
+        const auto original = config(interfaceName->first);
         ProxyOptions options;
         options.transparentRedirect = true;
+        options.listenAddress = interfaceName->second;
         options.allowedClientIp = original.clientIp;
         ProxyServer proxy;
         QVERIFY(proxy.start(original, options));
@@ -114,6 +137,12 @@ class M6TransparentProxyReadinessTests final : public QObject {
         wrongUpstream.serverPort = 18082;
         QVERIFY(!SessionSnapshot::create(wrongUpstream, factsFor(wrongUpstream), *readiness,
                                          QStringLiteral("wrong-upstream"), &error));
+        QVERIFY(!error.isEmpty());
+
+        auto wrongFacts = factsFor(original);
+        wrongFacts.researchIp = QStringLiteral("192.0.2.250");
+        QVERIFY(!SessionSnapshot::create(original, wrongFacts, *readiness,
+                                         QStringLiteral("wrong-listener"), &error));
         QVERIFY(!error.isEmpty());
 
         auto wrongInterface = original;

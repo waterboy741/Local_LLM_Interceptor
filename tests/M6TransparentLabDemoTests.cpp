@@ -18,7 +18,7 @@
 using namespace interceptor;
 
 namespace {
-std::optional<QString> activeNonLoopbackInterface() {
+std::optional<QPair<QString, QString>> activeNonLoopbackInterface() {
     for (const auto &networkInterface : QNetworkInterface::allInterfaces()) {
         const auto flags = networkInterface.flags();
         if (!flags.testFlag(QNetworkInterface::IsUp) ||
@@ -27,18 +27,23 @@ std::optional<QString> activeNonLoopbackInterface() {
             continue;
         for (const auto &entry : networkInterface.addressEntries())
             if (entry.ip().protocol() == QAbstractSocket::IPv4Protocol && !entry.ip().isLoopback())
-                return networkInterface.name();
+                return QPair<QString, QString>{networkInterface.name(), entry.ip().toString()};
     }
     return std::nullopt;
 }
 
 SessionConfig demoConfig(const QString &interfaceName) {
-    return {interfaceName,
-            QStringLiteral("192.0.2.10"),
-            QStringLiteral("192.0.2.30"),
-            18081,
-            {QStringLiteral("/api/generate"), QStringLiteral("/api/chat")},
-            false};
+    QString address;
+    for (const auto &entry : QNetworkInterface::interfaceFromName(interfaceName).addressEntries())
+        if (entry.ip().protocol() == QAbstractSocket::IPv4Protocol && !entry.ip().isLoopback()) {
+            address = entry.ip().toString();
+            break;
+        }
+    const quint32 research = QHostAddress(address).toIPv4Address();
+    const quint32 base = research & 0xffff0000U;
+    const QString client = QHostAddress(base | ((research & 0xffffU) == 10 ? 11U : 10U)).toString();
+    const QString server = QHostAddress(base | ((research & 0xffffU) == 30 ? 31U : 30U)).toString();
+    return {interfaceName, client, server, 18081, {"/api/generate", "/api/chat"}, false};
 }
 
 bool loopbackListenerAvailable() {
@@ -50,8 +55,14 @@ bool loopbackListenerAvailable() {
 
 NetworkFacts syntheticFacts(const SessionConfig &config) {
     NetworkFacts facts;
+    facts.prefixLength = 16;
     facts.interfaceName = config.interfaceName;
-    facts.researchIp = QStringLiteral("192.0.2.20");
+    for (const auto &entry :
+         QNetworkInterface::interfaceFromName(config.interfaceName).addressEntries())
+        if (entry.ip().protocol() == QAbstractSocket::IPv4Protocol && !entry.ip().isLoopback()) {
+            facts.researchIp = entry.ip().toString();
+            break;
+        }
     facts.researchMac = QStringLiteral("02:00:00:00:00:20");
     facts.clientMac = QStringLiteral("02:00:00:00:00:10");
     facts.serverMac = QStringLiteral("02:00:00:00:00:30");
@@ -67,7 +78,7 @@ class M6TransparentLabDemoTests final : public QObject {
     Q_OBJECT
 
   private slots:
-    void guiStartsLoopbackDemoForSelectedClientAndStopsIt() {
+    void guiStartsLanDemoForSelectedClientAndStopsIt() {
         const auto interfaceName = activeNonLoopbackInterface();
         if (!interfaceName)
             QSKIP("An active non-loopback IPv4 interface is required to bind the transparent demo");
@@ -88,7 +99,7 @@ class M6TransparentLabDemoTests final : public QObject {
         QVERIFY(interfaces && client && server && serverPort && listenPort && prepare && start &&
                 stop && status);
 
-        const int row = interfaces->findData(*interfaceName);
+        const int row = interfaces->findData(interfaceName->first);
         QVERIFY(row >= 0);
         interfaces->setCurrentIndex(row);
         client->setText(QStringLiteral("192.0.2.10"));
@@ -101,24 +112,25 @@ class M6TransparentLabDemoTests final : public QObject {
 
         start->click();
         QVERIFY2(status->text().startsWith(QStringLiteral("Ready:")), qPrintable(status->text()));
-        QVERIFY(status->text().contains(QStringLiteral("interface=") + *interfaceName));
+        QVERIFY(status->text().contains(QStringLiteral("interface=") + interfaceName->first));
         QVERIFY(status->text().contains(QStringLiteral("client=192.0.2.10")));
         QVERIFY(status->text().contains(QStringLiteral("server=192.0.2.30:18081")));
-        QVERIFY(status->text().contains(QStringLiteral("listener=127.0.0.1:")));
+        QVERIFY(status->text().contains(QStringLiteral("listener=") + interfaceName->second + ":"));
         QVERIFY(!status->text().contains(QStringLiteral("secret"), Qt::CaseInsensitive));
         QVERIFY(!start->isEnabled());
         QVERIFY(stop->isEnabled());
 
         const auto listenerPortMatch =
-            QRegularExpression(QStringLiteral("listener=127\\.0\\.0\\.1:(\\d+)"))
+            QRegularExpression(QStringLiteral("listener=%1:(\\d+)")
+                                   .arg(QRegularExpression::escape(interfaceName->second)))
                 .match(status->text());
         QVERIFY(listenerPortMatch.hasMatch());
         const auto listenerPort = listenerPortMatch.captured(1).toUShort();
         QVERIFY(listenerPort > 0);
         const auto statusTuple =
             QStringLiteral("interface=%1 client=192.0.2.10 server=192.0.2.30:18081 "
-                           "listener=127.0.0.1:%2")
-                .arg(*interfaceName, QString::number(listenerPort));
+                           "listener=%3:%2")
+                .arg(interfaceName->first, QString::number(listenerPort), interfaceName->second);
         QCOMPARE(status->text(), QStringLiteral("Ready: ") + statusTuple);
 
         stop->click();
@@ -126,7 +138,7 @@ class M6TransparentLabDemoTests final : public QObject {
         QVERIFY(start->isEnabled());
         QVERIFY(!stop->isEnabled());
         QTcpSocket socket;
-        socket.connectToHost(QHostAddress::LocalHost, listenerPort);
+        socket.connectToHost(QHostAddress(interfaceName->second), listenerPort);
         if (socket.waitForConnected(250)) {
             socket.write(
                 "GET /api/generate HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
@@ -143,21 +155,21 @@ class M6TransparentLabDemoTests final : public QObject {
         if (!loopbackListenerAvailable())
             QSKIP("This environment does not permit local loopback listeners");
 
-        const auto config = demoConfig(*interfaceName);
+        const auto config = demoConfig(interfaceName->first);
         ProxyOptions options;
         options.transparentRedirect = true;
-        options.listenAddress = QStringLiteral("127.0.0.1");
+        options.listenAddress = interfaceName->second;
         options.allowedClientIp = config.clientIp;
         options.listenPort = 0;
         options.timeoutMs = 120000;
 
         ProxyServer proxy;
         QVERIFY2(proxy.start(config, options),
-                 "Could not start synthetic loopback transparent listener");
+                 "Could not start synthetic LAN transparent listener");
         const auto readiness = proxy.transparentReadiness();
         QVERIFY(readiness.has_value());
         QVERIFY(proxy.isTransparentReadinessCurrent(*readiness));
-        QCOMPARE(readiness->listenAddress(), QStringLiteral("127.0.0.1"));
+        QCOMPARE(readiness->listenAddress(), interfaceName->second);
         QCOMPARE(readiness->allowedClientIp(), config.clientIp);
         QCOMPARE(readiness->upstreamServerIp(), config.serverIp);
         QCOMPARE(readiness->upstreamServerPort(), config.serverPort);
@@ -168,14 +180,15 @@ class M6TransparentLabDemoTests final : public QObject {
                                                       QStringLiteral("lab-demo-test"), &error);
         QVERIFY2(snapshot.has_value(), qPrintable(error));
         const auto expected =
-            QStringLiteral("rdr on \"%1\" inet proto tcp from 192.0.2.10 to 192.0.2.30 "
-                           "port 18081 -> 127.0.0.1 port %2\n"
-                           "pass in quick on \"%1\" inet proto tcp from 192.0.2.10 to "
-                           "127.0.0.1 port %2 flags S/SA keep state label \"llm_lab-demo-test\"\n"
-                           "pass out quick on \"%1\" inet proto tcp from 192.0.2.20 to "
-                           "192.0.2.30 port 18081 flags S/SA keep state label "
+            QStringLiteral("rdr on \"%1\" inet proto tcp from %4 to %5 "
+                           "port 18081 -> %3 port %2\n"
+                           "pass in quick on \"%1\" inet proto tcp from %4 to "
+                           "%3 port %2 flags S/SA keep state label \"llm_lab-demo-test\"\n"
+                           "pass out quick on \"%1\" inet proto tcp from %3 to "
+                           "%5 port 18081 flags S/SA keep state label "
                            "\"llm_lab-demo-test\"\n")
-                .arg(*interfaceName, QString::number(readiness->listenerPort()));
+                .arg(interfaceName->first, QString::number(readiness->listenerPort()),
+                     interfaceName->second, config.clientIp, config.serverIp);
         QCOMPARE(snapshot->proxyPort(), readiness->listenerPort());
         QCOMPARE(snapshot->facts().proxyListenPort, readiness->listenerPort());
         QCOMPARE(snapshot->pfRules(), expected);
@@ -188,7 +201,7 @@ class M6TransparentLabDemoTests final : public QObject {
         proxy.stop();
         QVERIFY(!proxy.transparentReadiness().has_value());
         QTcpSocket socket;
-        socket.connectToHost(QHostAddress::LocalHost,
+        socket.connectToHost(QHostAddress(interfaceName->second),
                              static_cast<quint16>(readiness->listenerPort()));
         if (socket.waitForConnected(250)) {
             socket.write(

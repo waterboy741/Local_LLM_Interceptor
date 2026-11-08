@@ -197,7 +197,7 @@ class LimitedTcpServer : public QTcpServer {
   public:
     using QTcpServer::QTcpServer;
     QHostAddress allowedClientAddress;
-    bool allowProbeLoopback = false;
+    QHostAddress probeAddress;
     int count = 0;
     QHash<QTcpSocket *, int> responding;
     QHash<quint16, QPointer<QTcpSocket>> sockets;
@@ -208,7 +208,7 @@ class LimitedTcpServer : public QTcpServer {
             return;
         }
         if (!allowedClientAddress.isNull() && socket->peerAddress() != allowedClientAddress &&
-            !(allowProbeLoopback && socket->peerAddress() == QHostAddress::LocalHost)) {
+            !(!probeAddress.isNull() && socket->peerAddress() == probeAddress)) {
             socket->abort();
             socket->deleteLater();
             return;
@@ -277,7 +277,8 @@ class Engine : public QAbstractHttpServer {
         listener.allowedClientAddress = options.allowedClientIp.isEmpty()
                                             ? QHostAddress()
                                             : QHostAddress(options.allowedClientIp);
-        listener.allowProbeLoopback = options.transparentRedirect;
+        listener.probeAddress =
+            options.transparentRedirect ? QHostAddress(options.listenAddress) : QHostAddress();
         holdTimer.setInterval(25);
         connect(&holdTimer, &QTimer::timeout, this, [this] {
             const auto current = holds;
@@ -360,7 +361,8 @@ class Engine : public QAbstractHttpServer {
             responder.write(Status::ServiceUnavailable);
             return true;
         }
-        if (options.transparentRedirect && incoming.remoteAddress() == QHostAddress::LocalHost) {
+        if (options.transparentRedirect &&
+            incoming.remoteAddress() == QHostAddress(options.listenAddress)) {
             const QByteArray path = incoming.url().path().toLatin1();
             const QByteArray prefix(transparentProbePrefix);
             const QByteArray hex = path.mid(prefix.size());
@@ -375,9 +377,12 @@ class Engine : public QAbstractHttpServer {
                 responder.write(Status::BadRequest);
                 return true;
             }
-            const TransparentProxyProbeTarget target{config.interfaceName, options.allowedClientIp,
-                                                     config.serverIp, config.serverPort,
-                                                     static_cast<int>(listener.serverPort())};
+            const TransparentProxyProbeTarget target{config.interfaceName,
+                                                     options.allowedClientIp,
+                                                     config.serverIp,
+                                                     config.serverPort,
+                                                     static_cast<int>(listener.serverPort()),
+                                                     options.listenAddress};
             responder.write(transparentProbeMac(target, nonce, probeSecret), "text/plain");
             return true;
         }
@@ -732,13 +737,15 @@ bool ProxyServer::start(const SessionConfig &config, const ProxyOptions &options
         return false;
     if (options.transparentRedirect) {
         if (config.explicitProxy || !config.validate().isEmpty() ||
-            options.listenAddress != QStringLiteral("127.0.0.1") ||
-            options.allowedClientIp != config.clientIp || !selectedInterface.isValid() ||
+            options.listenAddress == config.clientIp || options.listenAddress == config.serverIp ||
+            listenAddress.isLoopback() || options.allowedClientIp != config.clientIp ||
+            !selectedInterface.isValid() ||
             selectedInterface.flags().testFlag(QNetworkInterface::IsLoopBack) ||
             !selectedInterface.flags().testFlag(QNetworkInterface::IsUp) ||
             !selectedInterface.flags().testFlag(QNetworkInterface::IsRunning))
             return false;
-    } else if (remoteExplicitProxy) {
+    }
+    if (options.transparentRedirect || remoteExplicitProxy) {
         if (options.listenAddress == config.clientIp || listenAddress.isLoopback() ||
             !selectedInterface.isValid() ||
             !selectedInterface.flags().testFlag(QNetworkInterface::IsUp) ||
@@ -856,11 +863,19 @@ bool ProxyServer::isTransparentReadinessCurrent(const TransparentProxyReadiness 
     if (!impl_ || !impl_->engine || !impl_->transparentReadiness)
         return false;
     const auto &current = *impl_->transparentReadiness;
+    if (current.listenerIdentity_ != readiness.listenerIdentity_)
+        return false;
     const auto selectedInterface = QNetworkInterface::interfaceFromName(readiness.interfaceName());
     if (!selectedInterface.isValid() ||
         selectedInterface.flags().testFlag(QNetworkInterface::IsLoopBack) ||
         !selectedInterface.flags().testFlag(QNetworkInterface::IsUp) ||
         !selectedInterface.flags().testFlag(QNetworkInterface::IsRunning))
+        return false;
+    bool ownsAddress = false;
+    for (const auto &entry : selectedInterface.addressEntries())
+        if (entry.ip() == QHostAddress(readiness.listenAddress()))
+            ownsAddress = true;
+    if (!ownsAddress)
         return false;
     bool listening = false;
     QString address;

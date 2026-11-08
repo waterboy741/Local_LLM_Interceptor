@@ -15,7 +15,7 @@ inline QByteArray transparentProbeMessage(const TransparentProxyProbeTarget &tar
     return QByteArray("llm-interceptor-probe-v1\n") + nonce.toHex() + '\n' +
            target.interfaceName.toUtf8() + '\n' + target.clientIp.toUtf8() + '\n' +
            target.upstreamIp.toUtf8() + '\n' + QByteArray::number(target.upstreamPort) + '\n' +
-           QByteArray::number(target.listenerPort) + '\n';
+           QByteArray::number(target.listenerPort) + '\n' + target.listenAddress.toUtf8() + '\n';
 }
 
 inline QByteArray transparentProbeMac(const TransparentProxyProbeTarget &target,

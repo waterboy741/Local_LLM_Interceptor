@@ -216,6 +216,7 @@ class M6HelperPreMutationGateTests final : public QObject {
         QCOMPARE(fakes.listener.observedTarget.upstreamIp, QStringLiteral("192.0.2.30"));
         QCOMPARE(fakes.listener.observedTarget.upstreamPort, 18081);
         QCOMPARE(fakes.listener.observedTarget.listenerPort, 11434);
+        QCOMPARE(fakes.listener.observedTarget.listenAddress, QStringLiteral("192.0.2.20"));
         QCOMPARE(fakes.calls,
                  QStringList({QStringLiteral("interface:synthetic0"),
                               QStringLiteral("route:0:synthetic0:192.0.2.10"),

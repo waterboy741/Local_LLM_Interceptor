@@ -78,7 +78,7 @@ class M2ProxyTests : public QObject {
     }
 
   private slots:
-    void transparentRedirectReportsTheActualLoopbackListenerAndFixedUpstream() {
+    void transparentRedirectReportsSelectedLanListenerAndFixedUpstream() {
         const auto selected = activeNonLoopbackIPv4();
         if (!selected)
             QSKIP("A selected active interface is required for transparent readiness");
@@ -94,6 +94,7 @@ class M2ProxyTests : public QObject {
         QVERIFY(config.validate().isEmpty());
         ProxyOptions options;
         options.transparentRedirect = true;
+        options.listenAddress = selected->second;
         options.allowedClientIp = config.clientIp;
 
         ProxyServer proxy;
@@ -101,7 +102,7 @@ class M2ProxyTests : public QObject {
         const auto readiness = proxy.transparentReadiness();
         QVERIFY(readiness.has_value());
         QVERIFY(proxy.isTransparentReadinessCurrent(*readiness));
-        QCOMPARE(readiness->listenAddress(), QStringLiteral("127.0.0.1"));
+        QCOMPARE(readiness->listenAddress(), selected->second);
         QCOMPARE(readiness->listenerPort(), static_cast<int>(proxy.listenPort()));
         QVERIFY(readiness->listenerPort() > 0);
         QCOMPARE(readiness->allowedClientIp(), config.clientIp);
@@ -112,6 +113,16 @@ class M2ProxyTests : public QObject {
         QCOMPARE(proxy.listenPort(), quint16(0));
         QVERIFY(!proxy.transparentReadiness().has_value());
         QVERIFY(!proxy.isTransparentReadinessCurrent(*readiness));
+        options.listenPort = readiness->listenerPort();
+        QVERIFY(proxy.start(config, options));
+        const auto restarted = proxy.transparentReadiness();
+        QVERIFY(restarted.has_value());
+        QCOMPARE(restarted->listenerPort(), readiness->listenerPort());
+        QVERIFY(proxy.isTransparentReadinessCurrent(*restarted));
+        QVERIFY(restarted->isCurrent());
+        QVERIFY(!proxy.isTransparentReadinessCurrent(*readiness));
+        QVERIFY(!readiness->isCurrent());
+        proxy.stop();
     }
 
     void transparentRedirectRejectsInvalidModeBindInterfaceAndClientBeforeListen() {
@@ -130,14 +141,18 @@ class M2ProxyTests : public QObject {
 
         ProxyOptions options;
         options.transparentRedirect = true;
+        options.listenAddress = selected->second;
         options.allowedClientIp = valid.clientIp;
         auto explicitProxy = valid;
         explicitProxy.explicitProxy = true;
         assertRejected(explicitProxy, options);
 
         auto wrongBind = options;
-        wrongBind.listenAddress = QStringLiteral("127.0.0.2");
-        assertRejected(valid, wrongBind);
+        for (const auto &address : {QStringLiteral("127.0.0.1"), QStringLiteral("127.0.0.2"),
+                                    QStringLiteral("0.0.0.0"), QStringLiteral("192.0.2.250")}) {
+            wrongBind.listenAddress = address;
+            assertRejected(valid, wrongBind);
+        }
 
         auto wrongClient = options;
         wrongClient.allowedClientIp = QStringLiteral("192.0.2.11");
@@ -146,6 +161,16 @@ class M2ProxyTests : public QObject {
         auto wrongInterface = valid;
         wrongInterface.interfaceName = QStringLiteral("no_such_test_interface");
         assertRejected(wrongInterface, options);
+
+        auto selfClient = valid;
+        selfClient.clientIp = selected->second;
+        auto selfClientOptions = options;
+        selfClientOptions.allowedClientIp = selected->second;
+        assertRejected(selfClient, selfClientOptions);
+
+        auto selfUpstream = valid;
+        selfUpstream.serverIp = selected->second;
+        assertRejected(selfUpstream, options);
 
         auto invalidUpstream = valid;
         invalidUpstream.serverIp = QStringLiteral("not-an-ip");
@@ -163,19 +188,21 @@ class M2ProxyTests : public QObject {
                              18081,           {"/api/generate"}, false};
         ProxyOptions options;
         options.transparentRedirect = true;
+        options.listenAddress = selected->second;
         options.allowedClientIp = config.clientIp;
         ProxyServer proxy;
         QVERIFY(proxy.start(config, options));
 
         QTcpSocket client;
-        if (!client.bind(QHostAddress::LocalHost))
-            QSKIP("This host cannot bind a local test client to loopback");
+        if (!client.bind(QHostAddress(selected->second)))
+            QSKIP("This host cannot bind a local test client to the selected address");
         QSignalSpy connected(&client, &QTcpSocket::connected);
-        client.connectToHost(QHostAddress::LocalHost, proxy.listenPort());
+        client.connectToHost(QHostAddress(selected->second), proxy.listenPort());
         QTRY_VERIFY_WITH_TIMEOUT(
             connected.count() > 0 || client.state() == QAbstractSocket::UnconnectedState, 3000);
         if (connected.isEmpty())
-            QSKIP("This host cannot complete a loopback connection for the peer rejection test");
+            QSKIP("This host cannot complete a selected-interface connection for the peer "
+                  "rejection test");
         client.write(request("{\"model\":\"synthetic\",\"prompt\":\"denied\"}"));
         // Under a busy full-suite run, the local TCP stack can take several seconds to finish
         // surfacing the listener's immediate abort on this client socket.

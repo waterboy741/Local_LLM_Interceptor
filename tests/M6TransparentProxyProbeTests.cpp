@@ -24,7 +24,7 @@ class M6TransparentProxyProbeTests final : public QObject {
     TransparentProxyProbeTarget target_;
     QByteArray secret_;
 
-    static std::optional<QString> activeInterfaceName() {
+    static std::optional<QPair<QString, QString>> activeInterfaceName() {
         for (const auto &networkInterface : QNetworkInterface::allInterfaces()) {
             const auto flags = networkInterface.flags();
             if (!flags.testFlag(QNetworkInterface::IsUp) ||
@@ -34,7 +34,7 @@ class M6TransparentProxyProbeTests final : public QObject {
             for (const auto &entry : networkInterface.addressEntries())
                 if (entry.ip().protocol() == QAbstractSocket::IPv4Protocol &&
                     !entry.ip().isLoopback())
-                    return networkInterface.name();
+                    return QPair<QString, QString>{networkInterface.name(), entry.ip().toString()};
         }
         return std::nullopt;
     }
@@ -65,10 +65,12 @@ class M6TransparentProxyProbeTests final : public QObject {
         return result;
     }
 
-    static QByteArray exchange(quint16 port, const QByteArray &request) {
+    QByteArray exchange(quint16 port, const QByteArray &request) {
         QTcpSocket socket;
         socket.setProxy(QNetworkProxy::NoProxy);
-        socket.connectToHost(QHostAddress::LocalHost, port);
+        if (!socket.bind(QHostAddress(target_.listenAddress)))
+            return {};
+        socket.connectToHost(QHostAddress(target_.listenAddress), port);
         if (!socket.waitForConnected(1000))
             return {};
         if (socket.write(request) != request.size() || !socket.waitForBytesWritten(1000))
@@ -97,10 +99,11 @@ class M6TransparentProxyProbeTests final : public QObject {
         if (!loopbackListenerAvailable())
             QSKIP("This environment does not permit local loopback listeners");
 
-        SessionConfig config{*interfaceName, "192.0.2.10",      "192.0.2.30",
-                             18081,          {"/api/generate"}, false};
+        SessionConfig config{interfaceName->first, "192.0.2.10", "192.0.2.30", 18081,
+                             {"/api/generate"},    false};
         ProxyOptions options;
         options.transparentRedirect = true;
+        options.listenAddress = interfaceName->second;
         options.allowedClientIp = config.clientIp;
         QVERIFY2(proxy_.start(config, options), "Could not start synthetic transparent proxy");
         const auto secret = proxy_.transparentProbeSecret();
@@ -109,6 +112,7 @@ class M6TransparentProxyProbeTests final : public QObject {
         secret_ = *secret;
         target_ = {config.interfaceName, config.clientIp, config.serverIp, config.serverPort,
                    static_cast<int>(proxy_.listenPort())};
+        target_.listenAddress = interfaceName->second;
     }
 
     void cleanup() { proxy_.stop(); }
@@ -140,6 +144,10 @@ class M6TransparentProxyProbeTests final : public QObject {
         wrongUpstreamPort.upstreamPort = 18082;
         rejectTuple(wrongUpstreamPort);
 
+        auto wrongAddress = target_;
+        wrongAddress.listenAddress = QStringLiteral("127.0.0.1");
+        rejectTuple(wrongAddress);
+
         auto invalidListenerPort = target_;
         invalidListenerPort.listenerPort = 0;
         rejectTuple(invalidListenerPort);
@@ -153,7 +161,7 @@ class M6TransparentProxyProbeTests final : public QObject {
 
     void verifierRejectsDifferentListeningPort() {
         QTcpServer occupied;
-        QVERIFY(occupied.listen(QHostAddress::LocalHost, 0));
+        QVERIFY(occupied.listen(QHostAddress(target_.listenAddress), 0));
         auto wrongPort = target_;
         wrongPort.listenerPort = static_cast<int>(occupied.serverPort());
         QString error;
@@ -163,7 +171,7 @@ class M6TransparentProxyProbeTests final : public QObject {
 
     void verifierFailsClosedOnOversizedAndDelayedResponses() {
         QTcpServer oversized;
-        QVERIFY(oversized.listen(QHostAddress::LocalHost, 0));
+        QVERIFY(oversized.listen(QHostAddress(target_.listenAddress), 0));
         connect(&oversized, &QTcpServer::newConnection, &oversized, [&oversized] {
             auto *socket = oversized.nextPendingConnection();
             connect(socket, &QTcpSocket::readyRead, socket, [socket] {
@@ -182,7 +190,7 @@ class M6TransparentProxyProbeTests final : public QObject {
         QVERIFY(!error.isEmpty());
 
         QTcpServer delayed;
-        QVERIFY(delayed.listen(QHostAddress::LocalHost, 0));
+        QVERIFY(delayed.listen(QHostAddress(target_.listenAddress), 0));
         connect(&delayed, &QTcpServer::newConnection, &delayed, [&delayed] {
             auto *socket = delayed.nextPendingConnection();
             connect(socket, &QTcpSocket::readyRead, socket, [socket] { (void)socket->readAll(); });
@@ -206,7 +214,7 @@ class M6TransparentProxyProbeTests final : public QObject {
         QVERIFY(!error.isEmpty());
     }
 
-    void loopbackEndpointAcceptsOnlyExactProbePathWithoutQuery() {
+    void selectedLanEndpointAcceptsOnlyExactProbePathWithoutQuery() {
         QByteArray nonce(32, 'a');
         const QByteArray exactPath = QByteArray(transparentProbePrefix) + nonce.toHex();
         const QByteArray validResponse =

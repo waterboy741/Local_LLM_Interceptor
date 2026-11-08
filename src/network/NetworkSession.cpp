@@ -80,7 +80,7 @@ std::optional<SessionSnapshot> SessionSnapshot::create(const SessionConfig &conf
                                                        const TransparentProxyReadiness &readiness,
                                                        const QString &sessionId, QString *error) {
     if (!readiness.isCurrent() || readiness.interfaceName() != config.interfaceName ||
-        readiness.listenAddress() != QStringLiteral("127.0.0.1") || readiness.listenerPort() < 1 ||
+        readiness.listenAddress() != facts.researchIp || readiness.listenerPort() < 1 ||
         readiness.listenerPort() > 65535 || readiness.allowedClientIp() != config.clientIp ||
         readiness.upstreamServerIp() != config.serverIp ||
         readiness.upstreamServerPort() != config.serverPort) {
@@ -98,8 +98,8 @@ std::optional<SessionSnapshot> SessionSnapshot::create(const SessionConfig &conf
 QString SessionSnapshot::pfRules() const {
     const auto iface = '"' + config_.interfaceName + '"';
     const auto label = '"' + QString("llm_") + sessionId_ + '"';
-    return QString("rdr on %1 inet proto tcp from %2 to %3 port %4 -> 127.0.0.1 port %5\n"
-                   "pass in quick on %1 inet proto tcp from %2 to 127.0.0.1 port %5 flags S/SA "
+    return QString("rdr on %1 inet proto tcp from %2 to %3 port %4 -> %7 port %5\n"
+                   "pass in quick on %1 inet proto tcp from %2 to %7 port %5 flags S/SA "
                    "keep state label %6\n"
                    "pass out quick on %1 inet proto tcp from %7 to %3 port %4 flags S/SA keep "
                    "state label %6\n")

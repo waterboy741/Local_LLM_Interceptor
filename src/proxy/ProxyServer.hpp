@@ -12,6 +12,7 @@ struct ProxyOptions {
     QString allowedClientIp;
     int listenPort = 0;
     int timeoutMs = 2000;
+    // Transparent mode requires an explicit selected-interface LAN address and exact client IP.
     bool transparentRedirect = false;
     std::size_t maxBodyBytes = 1048576;
     std::size_t maxHistory = 100;

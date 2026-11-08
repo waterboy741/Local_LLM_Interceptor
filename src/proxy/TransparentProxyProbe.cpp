@@ -4,6 +4,7 @@
 
 #include <QElapsedTimer>
 #include <QHostAddress>
+#include <QNetworkInterface>
 #include <QNetworkProxy>
 #include <QTcpSocket>
 
@@ -29,6 +30,22 @@ bool verifyTransparentProxyProbe(const TransparentProxyProbeTarget &target,
         QHostAddress(target.clientIp).protocol() != QAbstractSocket::IPv4Protocol ||
         QHostAddress(target.upstreamIp).protocol() != QAbstractSocket::IPv4Protocol)
         return fail(QStringLiteral("invalid_probe_target"));
+    const QHostAddress listenerAddress(target.listenAddress);
+    const auto iface = QNetworkInterface::interfaceFromName(target.interfaceName);
+    bool ownsAddress = false;
+    for (const auto &entry : iface.addressEntries())
+        if (entry.ip() == listenerAddress)
+            ownsAddress = true;
+    if (!iface.isValid() || !iface.flags().testFlag(QNetworkInterface::IsUp) ||
+        !iface.flags().testFlag(QNetworkInterface::IsRunning) ||
+        iface.flags().testFlag(QNetworkInterface::IsLoopBack) || !ownsAddress ||
+        listenerAddress.protocol() != QAbstractSocket::IPv4Protocol || listenerAddress.isNull() ||
+        listenerAddress.isLoopback() || listenerAddress.isMulticast() ||
+        listenerAddress == QHostAddress::Broadcast ||
+        listenerAddress.toString() != target.listenAddress ||
+        target.listenAddress == target.clientIp || target.listenAddress == target.upstreamIp ||
+        (listenerAddress.toIPv4Address() & 0xffff0000U) == 0xa9fe0000U)
+        return fail(QStringLiteral("invalid_probe_listener_address"));
     QByteArray nonce(32, Qt::Uninitialized);
     if (SecRandomCopyBytes(kSecRandomDefault, static_cast<size_t>(nonce.size()), nonce.data()) !=
         errSecSuccess)
@@ -38,11 +55,14 @@ bool verifyTransparentProxyProbe(const TransparentProxyProbeTarget &target,
     socket.setProxy(QNetworkProxy::NoProxy);
     QElapsedTimer elapsed;
     elapsed.start();
-    socket.connectToHost(QHostAddress::LocalHost, static_cast<quint16>(target.listenerPort));
+    if (!socket.bind(listenerAddress, 0))
+        return fail(QStringLiteral("probe_bind_failed"));
+    socket.connectToHost(listenerAddress, static_cast<quint16>(target.listenerPort));
     if (!socket.waitForConnected(timeoutMs))
         return fail(QStringLiteral("probe_connect_failed"));
     const QByteArray request = QByteArray("GET ") + transparentProbePrefix + nonce.toHex() +
-                               " HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n";
+                               " HTTP/1.1\r\nHost: " + target.listenAddress.toLatin1() +
+                               "\r\nConnection: close\r\n\r\n";
     if (socket.write(request) != request.size())
         return fail(QStringLiteral("probe_write_failed"));
     QByteArray response;

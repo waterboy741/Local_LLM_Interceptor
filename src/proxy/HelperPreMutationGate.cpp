@@ -78,8 +78,8 @@ HelperPreMutationGate::verify(const SessionSnapshot &snapshot, const QByteArray 
             return reject("pf_attachment_not_ready");
 
         const TransparentProxyProbeTarget target{config.interfaceName, config.clientIp,
-                                                 config.serverIp, config.serverPort,
-                                                 snapshot.proxyPort()};
+                                                 config.serverIp,      config.serverPort,
+                                                 snapshot.proxyPort(), facts.researchIp};
         if (!listener.verify(target, probeSecret, 1000))
             return reject("transparent_listener_not_verified");
         return {true, QStringLiteral("ready")};

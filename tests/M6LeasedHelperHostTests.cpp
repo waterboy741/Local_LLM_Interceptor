@@ -202,7 +202,7 @@ class M6LeasedHelperHostTests final : public QObject {
         return SessionSnapshot::create(cfg, facts(), 11434, sessionId, error);
     }
     static TransparentProxyReadiness readiness(bool *current) {
-        TransparentProxyReadiness value(QStringLiteral("synthetic0"), QStringLiteral("127.0.0.1"),
+        TransparentProxyReadiness value(QStringLiteral("synthetic0"), QStringLiteral("192.0.2.20"),
                                         QStringLiteral("192.0.2.10"), QStringLiteral("192.0.2.30"),
                                         11434, 18081);
         value.currentCheck_ = [current] { return *current; };

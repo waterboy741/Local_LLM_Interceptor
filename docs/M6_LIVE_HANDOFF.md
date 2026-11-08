@@ -4,7 +4,7 @@ This is the work queue for the next implementation and lab sessions. The applica
 
 ## Existing building blocks
 
-- `ProxyServer` has a loopback-bound transparent mode with an exact client allowlist. Its live readiness evidence feeds `SessionSnapshot` and must be rechecked immediately before activation.
+- `ProxyServer` has a selected-interface LAN-bound transparent mode with an exact client allowlist. Its live readiness evidence feeds `SessionSnapshot` and must be rechecked immediately before activation.
 - `LeasedHelperHost` composes a host lease, session identity, snapshot, recovery operations, dispatcher, and watchdog. `LeasedUnixHelperCommandListener` serves bounded Heartbeat/Stop requests on a private socket; Start is an in-process operation. Neither is an installed service or connected to the GUI startup path.
 - `PfAnchorRecoverySystemOperations` and `PfEnableReferenceRecoveryCoordinator` enforce ordered, journaled PF anchor and exact-token reference operations through injected adapters. Startup blocks unresolved `release_needed` references until the corresponding anchor is independently cleaned. The typed native runners exist, but production authorization, attachment verification, and live wiring are incomplete.
 - `ArpLabProbeRunner`/`MacBpfArpPacketIo` support a bounded one-client redirect/correction probe. This is not continuous, crash-safe ARP redirection.
@@ -22,7 +22,7 @@ This is the work queue for the next implementation and lab sessions. The applica
 ## B. Transparent traffic and ARP session
 
 1. Prepare and review the dedicated `llm_interceptor/*` filter and translation references in the full PF configuration. Make a backup and rollback procedure before any write or reload. Confirm the active main rules contain exactly the expected references; syntax-only validation is insufficient.
-2. Generate a single-client/single-server/single-port PF `rdr` to the **actual** transparent listener port on `127.0.0.1`. Keep source, destination, protocol, interface, and owned anchor narrow. Confirm packet evaluation and return translation with an explicit lab probe before enabling ARP redirection. A Mac-local connection does not exercise the inbound `en0` path.
+2. Generate a single-client/single-server/single-port PF `rdr` to the **actual** transparent listener port on the research interface IPv4. Keep source, destination, protocol, interface, and owned anchor narrow. Confirm packet evaluation and return translation with an explicit lab probe before enabling ARP redirection. A Mac-local connection does not exercise the inbound `en0` path.
 3. Implement a continuous, bounded ARP session that refreshes only the client mapping for the server IP while active, records exact original identities, and sends the corrective frame on Stop and all recoverable failures. Pair it with PF/relay ordering so traffic is never intentionally redirected to an absent listener. A process crash or power loss cannot guarantee corrective ARP; document and test the recovery procedure.
 4. Integrate startup/stop order in one state machine: listener ready → lease and recovery clear → PF reference → owned PF rules → ARP redirect; on Stop cease ARP/restore mapping → remove owned rules and verify empty → release exact PF token → release host lease. Failed steps retain cleanup obligations and must not report success.
 

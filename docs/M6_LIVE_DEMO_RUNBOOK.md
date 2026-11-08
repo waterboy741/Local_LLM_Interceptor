@@ -1,19 +1,24 @@
 # One-client transparent lab trial (8 November 2026)
 
-This runbook is for the authorized, manually operated lab trial only. The app's **Transparent lab demo** listener must display `Ready: interface=en0 client=192.168.1.169 server=192.168.1.141:11434 listener=127.0.0.1:11434` throughout the trial. The research Mac currently has `en0=192.168.1.16/24`, MAC `7c:d1:ad:b8:5a:8e`; Ubuntu is `192.168.1.169/24` on `wlp2s0`; Ollama is `192.168.1.141:11434`. Recheck these facts before running any mutation. The Mac's PF baseline was **Disabled**, with only stock `com.apple/*` references and no PF enable references. The Ubuntu shell's selected route to Ollama was direct through `wlp2s0`. These observations expire when the network changes.
+This runbook is for the authorized, manually operated lab trial only. The app's **Transparent lab demo** listener must display `Ready: interface=en0 client=192.168.1.169 server=192.168.1.141:11434 listener=192.168.1.16:11434` throughout the trial. The research Mac currently has `en0=192.168.1.16/24`, MAC `7c:d1:ad:b8:5a:8e`; Ubuntu is `192.168.1.169/24` on `wlp2s0`; Ollama is `192.168.1.141:11434`. Recheck these facts before running any mutation. The Mac's PF baseline was **Disabled**, with only stock `com.apple/*` references and no PF enable references. The Ubuntu shell's selected route to Ollama was direct through `wlp2s0`. These observations expire when the network changes.
 
-The two prepared, ignored files are `build/demo-pf-candidate.conf` and `build/demo-session-rules.pf`. The first differs from `/etc/pf.conf` only by one `rdr-anchor "llm_interceptor/*"` and one `anchor "llm_interceptor/*"` reference. The second contains one scoped redirect and two scoped pass rules for `llm_interceptor/lab_demo_20261108`. Both passed `/sbin/pfctl -n -f` syntax checks. `build/demo-pf-original.conf` is an exact copy of the stock main configuration for rollback. No system PF file has been edited. Do not use a broad PF flush or a global PF disable.
+A November 8 Ubuntu client `/api/version` request returned HTTP 200 using the LAN-bound listener, the client neighbor override, and PF LAN redirection while the Mac's global receive-checksum offload setting `net.link.generic.system.hwcksum_rx` was temporarily set to `0`. The client neighbor and checksum setting were restored afterward. This is bounded lab evidence, not proof that the default checksum setting works. The application does not change this global setting. Any repeat must record its exact original value, make only an explicitly authorized temporary change, and restore and verify that value during rollback; do not assume `1` is the original value. Never leave it disabled after the trial.
+
+Regenerate session rules for the current displayed LAN address and actual port before loading anything. For the current tuple they must contain `rdr ... -> 192.168.1.16 port 11434` and `pass in ... to 192.168.1.16 port 11434`; reject stale loopback targets. A previously syntax-checked file does not establish that its target matches the new listener.
+
+The two prepared, ignored files are `build/demo-pf-candidate.conf` and `build/demo-lan-rules.pf`. The first differs from `/etc/pf.conf` only by one `rdr-anchor "llm_interceptor/*"` and one `anchor "llm_interceptor/*"` reference. The second contains one scoped redirect and two scoped pass rules for `llm_interceptor/lab_demo_20261108`. Both passed `/sbin/pfctl -n -f` syntax checks. `build/demo-pf-original.conf` is an exact copy of the stock main configuration for rollback. No system PF file has been edited. Do not use a broad PF flush or a global PF disable.
 
 ## Before changes
 
 On the Mac, leave the app open in Observe mode. From the repository root, check the listener, files, and baseline again:
 
 ```sh
-lsof -nP -iTCP@127.0.0.1:11434 -sTCP:LISTEN
+sysctl net.link.generic.system.hwcksum_rx
+lsof -nP -iTCP@192.168.1.16:11434 -sTCP:LISTEN
 cmp /etc/pf.conf build/demo-pf-original.conf
 diff -u /etc/pf.conf build/demo-pf-candidate.conf
 /sbin/pfctl -n -f build/demo-pf-candidate.conf
-/sbin/pfctl -a llm_interceptor/lab_demo_20261108 -n -f build/demo-session-rules.pf
+/sbin/pfctl -a llm_interceptor/lab_demo_20261108 -n -f build/demo-lan-rules.pf
 sudo /sbin/pfctl -s info | head -n 2
 sudo /sbin/pfctl -sr
 sudo /sbin/pfctl -sn
@@ -28,7 +33,7 @@ Keep a second Mac terminal open for the rollback below. Run each command separat
 
 ```sh
 sudo /sbin/pfctl -f build/demo-pf-candidate.conf
-sudo /sbin/pfctl -a llm_interceptor/lab_demo_20261108 -f build/demo-session-rules.pf
+sudo /sbin/pfctl -a llm_interceptor/lab_demo_20261108 -f build/demo-lan-rules.pf
 sudo /sbin/pfctl -E
 ```
 
@@ -47,6 +52,15 @@ The main `-f` command can replace rules dynamically inserted into the main rules
 
 ## One Ubuntu client request
 
+Record the exact original checksum value from the pre-change `sysctl` output in the rollback terminal. Only for this explicitly authorized, bounded trial, temporarily disable receive-checksum offload immediately before redirecting the client:
+
+```sh
+sudo sysctl -w net.link.generic.system.hwcksum_rx=0
+sysctl net.link.generic.system.hwcksum_rx
+```
+
+Stop if the setting did not become `0`. This changes a global Mac setting; restore the recorded original value as soon as the client neighbor override has been removed, before PF cleanup.
+
 Only after the PF checks pass, on Ubuntu reconfirm the direct route and original neighbor MAC. Keep the original OpenCode URL unchanged. Then redirect **only the Ollama neighbor entry** to the verified research Mac MAC:
 
 ```sh
@@ -54,7 +68,7 @@ sudo ip neigh replace 192.168.1.141 lladdr 7c:d1:ad:b8:5a:8e nud permanent dev w
 ip neigh show 192.168.1.141 dev wlp2s0
 ```
 
-Send one small synthetic `/v1/chat/completions` request to the unchanged Ollama address using the installed `qwen3.5:9b` model, then inspect the GUI and response. Use a short timeout and a harmless prompt. If it succeeds, send one short OpenCode request and record the GUI, response, and PF counters. If it fails, roll back immediately and preserve the HTTP status, PF counter, and GUI observation for diagnosis. Do not change the gateway neighbor mapping.
+First repeat the bounded `/api/version` request to the unchanged Ollama address and require HTTP 200. The recorded successful trial established this endpoint only. A subsequent small synthetic `/v1/chat/completions` request using the installed `qwen3.5:9b` model is a separate, still-required chat validation; inspect the GUI and response. Use a short timeout and a harmless prompt. If it succeeds, send one short OpenCode request and record the GUI, response, and PF counters. If it fails, roll back immediately and preserve the HTTP status, PF counter, and GUI observation for diagnosis. Do not change the gateway neighbor mapping.
 
 ## Rollback
 
@@ -68,6 +82,15 @@ ip neigh show 192.168.1.141 dev wlp2s0
 ```
 
 If a one-host route was required after a route change, remove only that route and verify the original selected route. It was **not** required by the most recent direct-route observation.
+
+On the Mac, immediately restore the recorded original checksum value **before beginning PF cleanup**, so a stalled PF cleanup cannot leave the global checksum setting changed:
+
+```sh
+sudo sysctl -w net.link.generic.system.hwcksum_rx=ORIGINAL_VALUE
+sysctl net.link.generic.system.hwcksum_rx
+```
+
+Replace `ORIGINAL_VALUE` with the exact value recorded before this trial; never execute the placeholder. Verify that the output equals that recorded value. If the temporary checksum change was not made, skip the write and verify the baseline only. If restoration fails, keep rollback incomplete and address that failure immediately.
 
 On the Mac, clear only the owned anchor's translation rules first. **Stop and keep the PF enable reference** if the command fails or the follow-up `-sn` output is not empty:
 
@@ -103,3 +126,5 @@ sudo /sbin/pfctl -s References
 ```
 
 Replace `TOKEN_FROM_THIS_TRIAL` with the actual token; never paste that placeholder as a command. If `-E` did not return a token, skip `-X`. Do not release the reference if any prior cleanup or verification stage failed. Stop the GUI listener. Verify direct OpenCode access to Ollama is restored. If the original neighbor MAC or PF baseline does not return, keep the trial marked incomplete and diagnose that state before another attempt.
+
+If a temporary receive-checksum change was made, restore the recorded original `net.link.generic.system.hwcksum_rx` value and verify it with `sysctl` before declaring rollback complete. The GUI does not own or recover this manual global change.

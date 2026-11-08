@@ -241,7 +241,7 @@ MainWindow::MainWindow(SessionController *controller, QWidget *parent)
     stopTransparentDemo->setObjectName("stopTransparentDemoButton");
     stopTransparentDemo->setEnabled(false);
     layout->addWidget(stopTransparentDemo);
-    auto *transparentHelp = new QLabel("Lab only: starts a loopback listener for the selected "
+    auto *transparentHelp = new QLabel("Lab only: starts a LAN listener for the selected "
                                        "client. It does not change routing or PF.",
                                        panel);
     transparentHelp->setWordWrap(true);
@@ -840,7 +840,13 @@ MainWindow::MainWindow(SessionController *controller, QWidget *parent)
             }
             ProxyOptions options;
             options.transparentRedirect = true;
-            options.listenAddress = "127.0.0.1";
+            const auto address = usableInterfaceIPv4(config.interfaceName);
+            if (!address) {
+                transparentDemoStatus_->setText(
+                    "Transparent lab demo: selected interface has no usable IPv4.");
+                return;
+            }
+            options.listenAddress = *address;
             options.allowedClientIp = config.clientIp;
             options.listenPort = listenPort_->value();
             options.timeoutMs = 120000;

@@ -347,7 +347,8 @@ class M6PfAnchorRecoveryCoordinatorTests : public QObject {
         QVERIFY(clearFailure.cleanupPending);
         QCOMPARE(clearFailure.statusCode, QString("cleanup_journal_clear_uncertain"));
         QCOMPARE(clearFailure.verification, PfAnchorCleanupVerification::Empty);
-        QCOMPARE(runner.operations.size(), 1);
+        QCOMPARE(runner.operations, (QVector<PfAnchorOperation>{PfAnchorOperation::RemoveNat,
+                                                                PfAnchorOperation::RemoveRules}));
         QCOMPARE(verifier.calls, 1);
 
         QVERIFY(::fchmod(directory.fd(), 0700) == 0);
@@ -357,8 +358,53 @@ class M6PfAnchorRecoveryCoordinatorTests : public QObject {
         QVERIFY(retry.success);
         QCOMPARE(retry.statusCode, QString("cleanup_complete"));
         QCOMPARE(journal.read().status, PfRecoveryJournalStatus::JournalMissing);
-        QCOMPARE(runner.operations.size(), 2);
+        QCOMPARE(runner.operations, (QVector<PfAnchorOperation>{PfAnchorOperation::RemoveNat,
+                                                                PfAnchorOperation::RemoveRules,
+                                                                PfAnchorOperation::RemoveNat,
+                                                                PfAnchorOperation::RemoveRules}));
         QCOMPARE(verifier.calls, 2);
+    }
+
+    void uncertainNatCleanupKeepsJournalAndRetriesBeforeVerifiedEmptyCheck() {
+        const QList<PfAnchorCommandResult> uncertainNatResults = {
+            {PfAnchorCommandStatus::TimedOut, -1, true, true},
+            {PfAnchorCommandStatus::TimedOut, -1, true, false}};
+        for (const auto &firstNatResult : uncertainNatResults) {
+            CoordinatorTempDirectory directory;
+            QVERIFY(directory.valid());
+            auto journal = PfRecoveryJournal::open(directory.fd());
+            QCOMPARE(journal.persistCleanupNeeded("coordinator-a"),
+                     PfRecoveryJournalStatus::Persisted);
+            CoordinatorFakeAuthorization authorization;
+            CoordinatorFakeRunner runner;
+            runner.results.append(firstNatResult);
+            PfAnchorOperations operations(authorization, runner);
+            CoordinatorFakeVerifier verifier;
+            PfAnchorRecoveryCoordinator coordinator(operations, journal, verifier);
+
+            const auto first = coordinator.cleanup(snapshot("coordinator-a"), "lease-token");
+            QVERIFY(!first.success);
+            QVERIFY(first.cleanupPending);
+            QVERIFY(first.operationMayHaveApplied);
+            QCOMPARE(first.statusCode, QString("cleanup_remove_failed_pending"));
+            QVERIFY(first.operationStatus == QString("nat_cleanup_failed") ||
+                    first.operationStatus == QString("nat_process_unreaped"));
+            QCOMPARE(runner.operations, QVector<PfAnchorOperation>{PfAnchorOperation::RemoveNat});
+            QCOMPARE(verifier.calls, 0);
+            QCOMPARE(journal.read().status, PfRecoveryJournalStatus::JournalPresent);
+
+            const auto retry = coordinator.cleanup(snapshot("coordinator-a"), "lease-token");
+            QVERIFY(retry.success);
+            QVERIFY(!retry.cleanupPending);
+            QCOMPARE(retry.statusCode, QString("cleanup_complete"));
+            QCOMPARE(retry.verification, PfAnchorCleanupVerification::Empty);
+            QCOMPARE(runner.operations,
+                     (QVector<PfAnchorOperation>{PfAnchorOperation::RemoveNat,
+                                                 PfAnchorOperation::RemoveNat,
+                                                 PfAnchorOperation::RemoveRules}));
+            QCOMPARE(verifier.calls, 1);
+            QCOMPARE(journal.read().status, PfRecoveryJournalStatus::JournalMissing);
+        }
     }
 };
 

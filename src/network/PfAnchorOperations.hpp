@@ -9,7 +9,7 @@
 
 namespace interceptor {
 
-enum class PfAnchorOperation { Install, RemoveRules };
+enum class PfAnchorOperation { Install, RemoveNat, RemoveRules };
 enum class PfAnchorCommandStatus {
     Completed,
     PermissionDenied,
@@ -83,8 +83,8 @@ class PfAnchorOperations {
     PfAnchorOperationResult remove(const SessionSnapshot &snapshot, const QString &leaseToken);
 
   private:
-    PfAnchorOperationResult apply(const SessionSnapshot &snapshot, const QString &leaseToken,
-                                  bool install);
+    PfAnchorOperationResult applyInstall(const SessionSnapshot &snapshot,
+                                         const QString &leaseToken);
     PfAnchorAuthorization &authorization_;
     PfAnchorCommandRunner &runner_;
 };

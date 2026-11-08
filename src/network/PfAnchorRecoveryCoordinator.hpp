@@ -10,7 +10,7 @@ enum class PfAnchorCleanupVerification { NotRequested, Empty, NotEmpty, Unknown 
 class PfAnchorCleanupVerifier {
   public:
     virtual ~PfAnchorCleanupVerifier() = default;
-    // Empty means a fresh read-only check confirmed this exact snapshot anchor has no rules.
+    // Empty means fresh read-only checks confirmed no filter or translation rules in this anchor.
     virtual PfAnchorCleanupVerification verifyOwnedAnchorEmpty(const SessionSnapshot &snapshot) = 0;
 };
 

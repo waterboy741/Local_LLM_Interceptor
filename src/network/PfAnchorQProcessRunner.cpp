@@ -27,6 +27,9 @@ bool isValidTypedCommand(const PfAnchorCommand &command, int timeoutMs,
                !command.standardInput().isEmpty() &&
                command.standardInput().size() <= maximumRulesBytes &&
                !command.standardInput().contains('\0');
+    case PfAnchorOperation::RemoveNat:
+        return command.arguments() == QStringList{"-a", command.anchor(), "-F", "nat"} &&
+               command.standardInput().isEmpty();
     case PfAnchorOperation::RemoveRules:
         return command.arguments() == QStringList{"-a", command.anchor(), "-F", "rules"} &&
                command.standardInput().isEmpty();

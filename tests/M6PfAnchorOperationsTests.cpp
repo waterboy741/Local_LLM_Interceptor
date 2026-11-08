@@ -11,10 +11,13 @@ class FakePfAnchorAuthorization final : public PfAnchorAuthorization {
     bool leaseValid = true;
     bool attachmentValid = true;
     bool ownershipValid = true;
+    bool failSpecificOwnership = false;
+    PfAnchorOperation failingOwnershipOperation = PfAnchorOperation::RemoveRules;
     QStringList calls;
     QString observedLease;
     QString ownedAnchor;
     PfAnchorOperation ownedOperation = PfAnchorOperation::Install;
+    QVector<PfAnchorOperation> ownedOperations;
 
     bool effectiveUserIsRoot() override {
         calls << "root";
@@ -39,7 +42,8 @@ class FakePfAnchorAuthorization final : public PfAnchorAuthorization {
         observedLease = leaseToken;
         ownedAnchor = snapshot.anchor();
         ownedOperation = operation;
-        return ownershipValid;
+        ownedOperations.append(operation);
+        return ownershipValid && !(failSpecificOwnership && operation == failingOwnershipOperation);
     }
 };
 
@@ -56,12 +60,18 @@ class FakePfAnchorCommandRunner final : public PfAnchorCommandRunner {
     };
 
     PfAnchorCommandResult nextResult{PfAnchorCommandStatus::Completed, 0, true, true};
+    QVector<PfAnchorCommandResult> results;
     QVector<Call> calls;
 
     PfAnchorCommandResult execute(const PfAnchorCommand &command, int timeoutMs,
                                   qsizetype outputLimitBytes) override {
         calls.append({command.program(), command.arguments(), command.standardInput(), timeoutMs,
                       outputLimitBytes, command.operation(), command.anchor()});
+        if (!results.isEmpty()) {
+            const auto result = results.front();
+            results.pop_front();
+            return result;
+        }
         return nextResult;
     }
 };
@@ -127,7 +137,7 @@ class M6PfAnchorOperationsTests : public QObject {
         QVERIFY(!call.arguments.contains("-X"));
     }
 
-    void cleanupRemovesOnlyRulesInTheOwnedAnchorAndRetainsTheLease() {
+    void cleanupRemovesNatThenRulesOnlyInTheOwnedAnchorAndRetainsTheLease() {
         const auto session = snapshot();
         QVERIFY(session.has_value());
         FakePfAnchorAuthorization authorization;
@@ -138,20 +148,31 @@ class M6PfAnchorOperationsTests : public QObject {
 
         QVERIFY(result.success);
         QVERIFY(result.mayHaveApplied);
-        QCOMPARE(authorization.calls, (QStringList{"root", "lease", "ownership"}));
+        QCOMPARE(authorization.calls, (QStringList{"root", "lease", "ownership", "ownership"}));
         QCOMPARE(authorization.observedLease, QString("lease-token-2"));
         QCOMPARE(authorization.ownedOperation, PfAnchorOperation::RemoveRules);
-        QCOMPARE(runner.calls.size(), 1);
-        const auto &call = runner.calls.first();
-        QCOMPARE(call.program, QString("/sbin/pfctl"));
-        QCOMPARE(call.arguments,
-                 (QStringList{"-a", "llm_interceptor/test-session", "-F", "rules"}));
-        QCOMPARE(call.operation, PfAnchorOperation::RemoveRules);
-        QVERIFY(call.standardInput.isEmpty());
-        QVERIFY(!call.arguments.contains("states"));
-        QVERIFY(!call.arguments.contains("-X"));
-        QVERIFY(!call.arguments.contains("-d"));
-        QVERIFY(!call.arguments.contains("-e"));
+        QCOMPARE(authorization.ownedOperations,
+                 (QVector<PfAnchorOperation>{PfAnchorOperation::RemoveNat,
+                                             PfAnchorOperation::RemoveRules}));
+        QCOMPARE(runner.calls.size(), 2);
+        const QStringList expectedArguments[] = {
+            {"-a", "llm_interceptor/test-session", "-F", "nat"},
+            {"-a", "llm_interceptor/test-session", "-F", "rules"}};
+        const PfAnchorOperation expectedOperations[] = {PfAnchorOperation::RemoveNat,
+                                                        PfAnchorOperation::RemoveRules};
+        for (int index = 0; index < runner.calls.size(); ++index) {
+            const auto &call = runner.calls[index];
+            QCOMPARE(call.program, QString("/sbin/pfctl"));
+            QCOMPARE(call.arguments, expectedArguments[index]);
+            QCOMPARE(call.operation, expectedOperations[index]);
+            QCOMPARE(call.anchor, QString("llm_interceptor/test-session"));
+            QVERIFY(call.standardInput.isEmpty());
+            QVERIFY(!call.arguments.contains("all"));
+            QVERIFY(!call.arguments.contains("states"));
+            QVERIFY(!call.arguments.contains("-X"));
+            QVERIFY(!call.arguments.contains("-d"));
+            QVERIFY(!call.arguments.contains("-e"));
+        }
     }
 
     void cleanupCanRemoveOwnedRulesAfterPfOrAttachmentBecomesUnavailable() {
@@ -169,11 +190,15 @@ class M6PfAnchorOperationsTests : public QObject {
 
             QVERIFY(result.success);
             QVERIFY(result.mayHaveApplied);
-            QCOMPARE(authorization.calls, (QStringList{"root", "lease", "ownership"}));
+            QCOMPARE(authorization.calls, (QStringList{"root", "lease", "ownership", "ownership"}));
             QCOMPARE(authorization.observedLease, QString("lease-token-cleanup"));
-            QCOMPARE(authorization.ownedOperation, PfAnchorOperation::RemoveRules);
-            QCOMPARE(runner.calls.size(), 1);
-            QCOMPARE(runner.calls.first().arguments,
+            QCOMPARE(authorization.ownedOperations,
+                     (QVector<PfAnchorOperation>{PfAnchorOperation::RemoveNat,
+                                                 PfAnchorOperation::RemoveRules}));
+            QCOMPARE(runner.calls.size(), 2);
+            QCOMPARE(runner.calls[0].arguments,
+                     (QStringList{"-a", "llm_interceptor/test-session", "-F", "nat"}));
+            QCOMPARE(runner.calls[1].arguments,
                      (QStringList{"-a", "llm_interceptor/test-session", "-F", "rules"}));
         }
     }
@@ -209,6 +234,22 @@ class M6PfAnchorOperationsTests : public QObject {
             QCOMPARE(authorization.calls, test.expectedCalls);
             QVERIFY(runner.calls.isEmpty());
         }
+
+        FakePfAnchorAuthorization secondOwnershipFailure;
+        secondOwnershipFailure.failSpecificOwnership = true;
+        secondOwnershipFailure.failingOwnershipOperation = PfAnchorOperation::RemoveRules;
+        FakePfAnchorCommandRunner runner;
+        PfAnchorOperations operations(secondOwnershipFailure, runner);
+        const auto result = operations.remove(*session, "lease-token");
+        QVERIFY(!result.success);
+        QVERIFY(!result.mayHaveApplied);
+        QCOMPARE(result.statusCode, QString("anchor_ownership_unverified"));
+        QCOMPARE(secondOwnershipFailure.ownedOperations,
+                 (QVector<PfAnchorOperation>{PfAnchorOperation::RemoveNat,
+                                             PfAnchorOperation::RemoveRules}));
+        QCOMPARE(secondOwnershipFailure.calls,
+                 (QStringList{"root", "lease", "ownership", "ownership"}));
+        QVERIFY(runner.calls.isEmpty());
     }
 
     void nonRootCallerCannotRunPfCommands() {
@@ -317,12 +358,81 @@ class M6PfAnchorOperationsTests : public QObject {
 
                 QVERIFY(!result.success);
                 QCOMPARE(result.mayHaveApplied, commandResult.started);
-                QCOMPARE(result.statusCode, expectedStatus);
-                QCOMPARE(runner.calls.size(), 1);
-                QCOMPARE(runner.calls.first().operation,
-                         install ? PfAnchorOperation::Install : PfAnchorOperation::RemoveRules);
+                if (install) {
+                    QCOMPARE(result.statusCode, expectedStatus);
+                    QCOMPARE(runner.calls.size(), 1);
+                    QCOMPARE(runner.calls.first().operation, PfAnchorOperation::Install);
+                } else if (expectedStatus == "process_unreaped") {
+                    QCOMPARE(result.statusCode, QString("nat_process_unreaped"));
+                    QCOMPARE(runner.calls.size(), 1);
+                    QCOMPARE(runner.calls.first().operation, PfAnchorOperation::RemoveNat);
+                } else {
+                    QCOMPARE(result.statusCode, QString("nat_cleanup_failed"));
+                    QCOMPARE(runner.calls.size(), 1);
+                    QCOMPARE(runner.calls.first().operation, PfAnchorOperation::RemoveNat);
+                }
             }
         }
+    }
+
+    void partialCleanupFailureRetainsUncertaintyAndCanRetryBothOwnedFlushes() {
+        const auto session = snapshot();
+        QVERIFY(session.has_value());
+        FakePfAnchorAuthorization authorization;
+        FakePfAnchorCommandRunner runner;
+        runner.results = {{PfAnchorCommandStatus::TimedOut, -1, true, true}};
+        PfAnchorOperations operations(authorization, runner);
+
+        const auto partial = operations.remove(*session, "lease-token");
+
+        QVERIFY(!partial.success);
+        QVERIFY(partial.mayHaveApplied);
+        QCOMPARE(partial.statusCode, QString("nat_cleanup_failed"));
+        QCOMPARE(runner.calls.size(), 1);
+        QCOMPARE(runner.calls[0].arguments,
+                 (QStringList{"-a", "llm_interceptor/test-session", "-F", "nat"}));
+
+        const auto retry = operations.remove(*session, "lease-token");
+
+        QVERIFY(retry.success);
+        QVERIFY(retry.mayHaveApplied);
+        QCOMPARE(retry.statusCode, QString("completed"));
+        QCOMPARE(runner.calls.size(), 3);
+        for (int index = 0; index < runner.calls.size(); ++index)
+            QCOMPARE(runner.calls[index].anchor, QString("llm_interceptor/test-session"));
+        QCOMPARE(runner.calls[1].arguments,
+                 (QStringList{"-a", "llm_interceptor/test-session", "-F", "nat"}));
+        QCOMPARE(runner.calls[2].arguments,
+                 (QStringList{"-a", "llm_interceptor/test-session", "-F", "rules"}));
+    }
+
+    void filterFlushFailureAfterSuccessfulNatFlushCanRetry() {
+        const auto session = snapshot();
+        QVERIFY(session.has_value());
+        FakePfAnchorAuthorization authorization;
+        FakePfAnchorCommandRunner runner;
+        runner.results = {{PfAnchorCommandStatus::Completed, 0, true, true},
+                          {PfAnchorCommandStatus::TimedOut, -1, true, true}};
+        PfAnchorOperations operations(authorization, runner);
+
+        const auto partial = operations.remove(*session, "lease-token");
+        QVERIFY(!partial.success);
+        QVERIFY(partial.mayHaveApplied);
+        QCOMPARE(partial.statusCode, QString("rules_cleanup_failed"));
+        QCOMPARE(runner.calls.size(), 2);
+        QCOMPARE(runner.calls[0].arguments,
+                 (QStringList{"-a", "llm_interceptor/test-session", "-F", "nat"}));
+        QCOMPARE(runner.calls[1].arguments,
+                 (QStringList{"-a", "llm_interceptor/test-session", "-F", "rules"}));
+
+        const auto retry = operations.remove(*session, "lease-token");
+        QVERIFY(retry.success);
+        QCOMPARE(retry.statusCode, QString("completed"));
+        QCOMPARE(runner.calls.size(), 4);
+        QCOMPARE(runner.calls[2].arguments,
+                 (QStringList{"-a", "llm_interceptor/test-session", "-F", "nat"}));
+        QCOMPARE(runner.calls[3].arguments,
+                 (QStringList{"-a", "llm_interceptor/test-session", "-F", "rules"}));
     }
 
     void commandAndOperationResultsDoNotExposeRunnerOutputOrMachineState() {

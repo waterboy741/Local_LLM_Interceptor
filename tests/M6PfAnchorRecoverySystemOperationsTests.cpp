@@ -289,9 +289,10 @@ class M6PfAnchorRecoverySystemOperationsTests final : public QObject {
         QCOMPARE(pending.record->sessionId, session.sessionId());
 
         QVERIFY(harness.decorated->removeAnchor(session));
-        QCOMPARE(harness.runner.operations,
-                 (QVector<PfAnchorOperation>{PfAnchorOperation::Install,
-                                             PfAnchorOperation::RemoveRules}));
+        QCOMPARE(
+            harness.runner.operations,
+            (QVector<PfAnchorOperation>{PfAnchorOperation::Install, PfAnchorOperation::RemoveNat,
+                                        PfAnchorOperation::RemoveRules}));
         QCOMPARE(harness.verifier.calls, 1);
         QCOMPARE(harness.authorization.observedLease, *token);
         QCOMPARE(harness.authorization.observedOperation, PfAnchorOperation::RemoveRules);

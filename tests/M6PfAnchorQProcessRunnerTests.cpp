@@ -121,6 +121,14 @@ class FakeChildProcess final : public PfAnchorChildProcess {
 
 class FakeChildFactory final : public PfAnchorChildProcessFactory {
   public:
+    struct Call {
+        QString program;
+        QStringList arguments;
+        QByteArray standardInput;
+        PfAnchorOperation operation;
+        QString anchor;
+    };
+
     std::shared_ptr<FakeChildState> state = std::make_shared<FakeChildState>();
     QString program;
     QStringList arguments;
@@ -128,6 +136,7 @@ class FakeChildFactory final : public PfAnchorChildProcessFactory {
     PfAnchorOperation operation = PfAnchorOperation::Install;
     QString anchor;
     int createCalls = 0;
+    QVector<Call> calls;
 
     std::unique_ptr<PfAnchorChildProcess> create(const PfAnchorCommand &command) override {
         ++createCalls;
@@ -136,6 +145,7 @@ class FakeChildFactory final : public PfAnchorChildProcessFactory {
         standardInput = command.standardInput();
         operation = command.operation();
         anchor = command.anchor();
+        calls.append({program, arguments, standardInput, operation, anchor});
         return std::make_unique<FakeChildProcess>(state);
     }
 };
@@ -179,6 +189,10 @@ class M6PfAnchorQProcessRunnerTests : public QObject {
         return {"-a", "llm_interceptor/runner-test", "-F", "rules"};
     }
 
+    static QStringList expectedRemoveNatArguments() {
+        return {"-a", "llm_interceptor/runner-test", "-F", "nat"};
+    }
+
   private slots:
     void installAndRemoveUseOnlyFixedProgramArgumentsAndInput() {
         const auto session = snapshot();
@@ -193,17 +207,29 @@ class M6PfAnchorQProcessRunnerTests : public QObject {
 
             QVERIFY(result.success);
             QVERIFY(result.mayHaveApplied);
-            QCOMPARE(factory.createCalls, 1);
+            QCOMPARE(factory.createCalls, install ? 1 : 2);
             QCOMPARE(factory.program, QString("/sbin/pfctl"));
             QCOMPARE(factory.anchor, QString("llm_interceptor/runner-test"));
             if (install) {
                 QCOMPARE(factory.operation, PfAnchorOperation::Install);
                 QCOMPARE(factory.arguments, expectedInstallArguments());
                 QCOMPARE(factory.standardInput, session.pfRules().toUtf8());
+                QCOMPARE(factory.calls.size(), 1);
             } else {
                 QCOMPARE(factory.operation, PfAnchorOperation::RemoveRules);
                 QCOMPARE(factory.arguments, expectedRemoveArguments());
                 QVERIFY(factory.standardInput.isEmpty());
+                QCOMPARE(factory.calls.size(), 2);
+                QCOMPARE(factory.calls[0].operation, PfAnchorOperation::RemoveNat);
+                QCOMPARE(factory.calls[0].arguments, expectedRemoveNatArguments());
+                QCOMPARE(factory.calls[0].program, QString("/sbin/pfctl"));
+                QCOMPARE(factory.calls[0].anchor, QString("llm_interceptor/runner-test"));
+                QVERIFY(factory.calls[0].standardInput.isEmpty());
+                QCOMPARE(factory.calls[1].operation, PfAnchorOperation::RemoveRules);
+                QCOMPARE(factory.calls[1].arguments, expectedRemoveArguments());
+                QCOMPARE(factory.calls[1].program, QString("/sbin/pfctl"));
+                QCOMPARE(factory.calls[1].anchor, QString("llm_interceptor/runner-test"));
+                QVERIFY(factory.calls[1].standardInput.isEmpty());
             }
             QCOMPARE(factory.state->input, factory.standardInput);
             QVERIFY(factory.state->writeClosed);

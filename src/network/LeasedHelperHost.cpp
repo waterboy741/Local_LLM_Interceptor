@@ -148,6 +148,7 @@ std::unique_ptr<LeasedHelperHost> LeasedHelperHost::create(
         state->watchdog = std::make_unique<HelperWatchdog>(*state->dispatcher);
     } catch (...) {
         wipe(dispatcherCapability);
+        wipe(clientCapability);
         return fail(QStringLiteral("helper_dispatcher_creation_failed"));
     }
     wipe(clientCapability);

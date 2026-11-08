@@ -1,3 +1,4 @@
+#define __STDC_WANT_LIB_EXT1__ 1
 #include "UnixSocketCommandTransport.hpp"
 #include "HelperSessionIdentity.hpp"
 
@@ -10,6 +11,7 @@
 #include <cstdint>
 #include <limits>
 #include <poll.h>
+#include <string.h>
 #include <sys/socket.h>
 
 namespace interceptor {
@@ -17,6 +19,18 @@ namespace {
 constexpr int requestTimeoutMs = 1000;
 constexpr quint32 maximumFrameSize = 256;
 constexpr quint8 protocolVersion = 1;
+
+void wipe(QByteArray &bytes) noexcept {
+    if (!bytes.isEmpty())
+        (void)memset_s(bytes.data(), static_cast<rsize_t>(bytes.size()), 0,
+                       static_cast<rsize_t>(bytes.size()));
+    bytes.clear();
+}
+
+struct WipeBytesOnExit final {
+    QByteArray &bytes;
+    ~WipeBytesOnExit() { wipe(bytes); }
+};
 
 bool isUnixStreamSocket(int fd) {
     int socketType = 0;
@@ -173,7 +187,7 @@ bool decodeCommand(const QByteArray &frame, HelperCommand *command, QString *err
     if (capabilityLength != HelperSessionIdentity::capabilityRandomBytes ||
         frame.size() < offset + capabilityLength + 1)
         return reject(QStringLiteral("invalid_capability_length"));
-    const QByteArray capability = frame.mid(offset, capabilityLength);
+    const qsizetype capabilityOffset = offset;
     offset += capabilityLength;
 
     const quint8 anchorLength = static_cast<quint8>(frame.at(offset++));
@@ -184,7 +198,7 @@ bool decodeCommand(const QByteArray &frame, HelperCommand *command, QString *err
         return reject(QStringLiteral("invalid_anchor"));
 
     command->type = type;
-    command->capability = capability;
+    command->capability = frame.mid(capabilityOffset, capabilityLength);
     command->anchor = anchor;
     return true;
 }
@@ -227,6 +241,7 @@ bool dispatchOneUnixSocketCommand(int connectedSocketFd, HelperDispatcher &dispa
         return sendRejected(connectedSocketFd, error, QStringLiteral("frame_size_out_of_bounds"));
 
     QByteArray frame(static_cast<qsizetype>(frameSize), Qt::Uninitialized);
+    const WipeBytesOnExit wipeFrame{frame};
     if (!readExact(connectedSocketFd, frame.data(), frame.size(), timer, error))
         return false;
     if (!requestEndedWithoutTrailingBytes(connectedSocketFd, timer, error)) {
@@ -236,6 +251,7 @@ bool dispatchOneUnixSocketCommand(int connectedSocketFd, HelperDispatcher &dispa
     }
 
     HelperCommand command;
+    const WipeBytesOnExit wipeCapability{command.capability};
     QString decodeError;
     if (!decodeCommand(frame, &command, &decodeError))
         return sendRejected(connectedSocketFd, error, decodeError);

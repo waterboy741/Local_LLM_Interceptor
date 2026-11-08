@@ -1,3 +1,4 @@
+#include "network/InstalledHelperProcessBootstrap.hpp"
 #include "network/LeasedHelperHost.hpp"
 #include "network/LeasedUnixHelperCommandListener.hpp"
 #include "network/PfAnchorOperations.hpp"
@@ -24,7 +25,15 @@ using namespace interceptor;
 
 class HelperHostFakeBootstrapAuthenticator final : public BootstrapPeerAuthenticator {
   public:
-    bool authenticate(int, const QByteArray &) override { return true; }
+    bool accepted = true;
+    QList<int> authenticatedDescriptors;
+    QList<QByteArray> expectedIdentities;
+
+    bool authenticate(int descriptor, const QByteArray &expectedIdentity) override {
+        authenticatedDescriptors << descriptor;
+        expectedIdentities << expectedIdentity;
+        return accepted;
+    }
 };
 
 class HelperHostFakeBackend final : public SystemOperations {
@@ -534,6 +543,139 @@ class M6LeasedHelperHostTests final : public QObject {
         QCOMPARE(host->state(), NetworkSession::State::Idle);
         QVERIFY(deps.runner.calls.contains(QStringLiteral("install")));
         QVERIFY(deps.runner.calls.contains(QStringLiteral("remove")));
+    }
+
+    void installedProcessBootstrapRequiresRootBeforePeerAuthentication() {
+        if (::geteuid() == 0)
+            QSKIP("This check specifically covers the non-root rejection path.");
+
+        HelperHostPrivateDirectory directory;
+        QVERIFY(directory.valid());
+        HelperHostFakeBootstrapAuthenticator authenticator;
+        int factoryCalls = 0;
+        const LeasedHelperHost::BootstrapOperationsFactory factory =
+            [&factoryCalls](const HostSessionLease &, const SessionSnapshot &, const QByteArray &) {
+                ++factoryCalls;
+                return std::unique_ptr<PfAnchorRecoverySystemOperations>{};
+            };
+        QString error;
+        auto process = InstalledHelperProcessBootstrap::create(
+            directory.path(), -1, authenticator, QByteArrayLiteral("gui-code"), factory,
+            [] { return qint64(10); }, &error);
+
+        QVERIFY(!process);
+        QCOMPARE(error, QStringLiteral("effective_root_required"));
+        QVERIFY(authenticator.authenticatedDescriptors.isEmpty());
+        QCOMPARE(factoryCalls, 0);
+    }
+
+    void installedProcessBootstrapAdoptsAuthenticatedSameSocketAndStartsFakeHost() {
+        if (::geteuid() != 0)
+            QSKIP("Opening the root-owned helper state directory requires root.");
+
+        HelperHostPrivateDirectory directory;
+        QVERIFY(directory.valid());
+        Dependencies deps(directory.fd());
+        QVERIFY(deps.recoveryJournal.valid());
+        const auto snapshot = makeSnapshot(QStringLiteral("process-bootstrap-session"));
+        QVERIFY(snapshot.has_value());
+        QByteArray probeSecret(32, 'r');
+
+        int sockets[2] = {-1, -1};
+        QCOMPARE(::socketpair(AF_UNIX, SOCK_STREAM, 0, sockets), 0);
+        HelperHostFakeBootstrapAuthenticator authenticator;
+        HelperHostFakeBootstrapAuthenticator writerAuthenticator;
+        bool written = false;
+        QString writerError;
+        std::thread writer([&] {
+            written = writeBootstrapHandoff(sockets[0], writerAuthenticator,
+                                            QByteArrayLiteral("helper-code"), *snapshot,
+                                            probeSecret, &writerError);
+        });
+
+        int factoryCalls = 0;
+        QByteArray observedSecret;
+        QString observedSessionId;
+        const LeasedHelperHost::BootstrapOperationsFactory factory =
+            [&factoryCalls, &observedSecret, &observedSessionId,
+             &deps](const HostSessionLease &lease, const SessionSnapshot &transferred,
+                    const QByteArray &secret) {
+                ++factoryCalls;
+                observedSecret = secret;
+                observedSessionId = transferred.sessionId();
+                if (!lease.acquired() || !lease.descriptorHasCloseOnExec())
+                    return std::unique_ptr<PfAnchorRecoverySystemOperations>{};
+                return std::make_unique<PfAnchorRecoverySystemOperations>(deps.backend, lease,
+                                                                          deps.coordinator);
+            };
+        QString error;
+        auto process = InstalledHelperProcessBootstrap::create(
+            directory.path(), sockets[1], authenticator, QByteArrayLiteral("gui-code"), factory,
+            [] { return qint64(100); }, &error);
+        writer.join();
+        ::close(sockets[0]);
+        ::close(sockets[1]);
+
+        QVERIFY2(written, qPrintable(writerError));
+        QVERIFY2(process, qPrintable(error));
+        QVERIFY(error.isEmpty());
+        QCOMPARE(authenticator.authenticatedDescriptors, QList<int>{sockets[1]});
+        QCOMPARE(authenticator.expectedIdentities,
+                 QList<QByteArray>{QByteArrayLiteral("gui-code")});
+        QCOMPARE(factoryCalls, 1);
+        QCOMPARE(observedSessionId, snapshot->sessionId());
+        QCOMPARE(observedSecret, probeSecret);
+        QCOMPARE(process->host().snapshot().sessionId(), snapshot->sessionId());
+        QCOMPARE(process->stateDirectoryDescriptor() >= 0, true);
+        QVERIFY(deps.backend.calls.isEmpty());
+
+        QVERIFY2(process->start(&error), qPrintable(error));
+        auto credentials = process->takeCredentials();
+        QVERIFY(credentials.has_value());
+        QCOMPARE(credentials->sessionId(), snapshot->sessionId());
+        QCOMPARE(credentials->capability().size(), 32);
+        QVERIFY(credentials->capability() != probeSecret);
+        QByteArray response;
+        bool descriptorsOpen = false;
+        const auto stop =
+            wireCommand(2, credentials->capability(), process->host().snapshot().anchor());
+        QVERIFY(dispatchWire(process->host(), stop, &response, &descriptorsOpen, &error));
+        QCOMPARE(response, QByteArray(1, char(1)));
+        QCOMPARE(process->host().state(), NetworkSession::State::Idle);
+        observedSecret.fill('\0');
+        probeSecret.fill('\0');
+    }
+
+    void installedProcessBootstrapRejectsPeerAuthenticationBeforeFactory() {
+        if (::geteuid() != 0)
+            QSKIP("Opening the root-owned helper state directory requires root.");
+
+        HelperHostPrivateDirectory directory;
+        QVERIFY(directory.valid());
+        HelperHostFakeBootstrapAuthenticator authenticator;
+        authenticator.accepted = false;
+        int sockets[2] = {-1, -1};
+        QCOMPARE(::socketpair(AF_UNIX, SOCK_STREAM, 0, sockets), 0);
+        int factoryCalls = 0;
+        const LeasedHelperHost::BootstrapOperationsFactory factory =
+            [&factoryCalls](const HostSessionLease &, const SessionSnapshot &, const QByteArray &) {
+                ++factoryCalls;
+                return std::unique_ptr<PfAnchorRecoverySystemOperations>{};
+            };
+        QString error;
+        auto process = InstalledHelperProcessBootstrap::create(
+            directory.path(), sockets[1], authenticator, QByteArrayLiteral("gui-code"), factory,
+            [] { return qint64(10); }, &error);
+        ::close(sockets[0]);
+        ::close(sockets[1]);
+
+        QVERIFY(!process);
+        QCOMPARE(error, QStringLiteral("bootstrap_peer_not_authenticated"));
+        QCOMPARE(authenticator.authenticatedDescriptors, QList<int>{sockets[1]});
+        QCOMPARE(factoryCalls, 0);
+        QVERIFY(directory.valid());
+        auto leaseAfterFailure = HostSessionLease::acquire(directory.fd());
+        QVERIFY(leaseAfterFailure.acquired());
     }
 
     void bootstrapStartCredentialsHeartbeatStopAndLeaseLifetime() {

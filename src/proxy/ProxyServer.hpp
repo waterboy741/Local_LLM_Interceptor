@@ -59,6 +59,7 @@ class ProxyServer : public QObject {
     void stop();
     quint16 listenPort() const;
     std::optional<TransparentProxyReadiness> transparentReadiness() const;
+    std::optional<QByteArray> transparentProbeSecret() const;
     bool isTransparentReadinessCurrent(const TransparentProxyReadiness &) const;
     std::vector<ObservedRequest> history() const;
     bool setModificationOptions(const ModificationOptions &);

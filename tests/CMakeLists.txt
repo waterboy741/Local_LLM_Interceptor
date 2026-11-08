@@ -19,6 +19,11 @@ target_link_libraries(m6_transparent_proxy_readiness_tests PRIVATE
 add_test(NAME m6_transparent_proxy_readiness COMMAND m6_transparent_proxy_readiness_tests)
 set_tests_properties(m6_transparent_proxy_readiness PROPERTIES TIMEOUT 30)
 
+qt_add_executable(m6_transparent_proxy_probe_tests M6TransparentProxyProbeTests.cpp)
+target_link_libraries(m6_transparent_proxy_probe_tests PRIVATE interceptor_proxy Qt6::Test)
+add_test(NAME m6_transparent_proxy_probe COMMAND m6_transparent_proxy_probe_tests)
+set_tests_properties(m6_transparent_proxy_probe PROPERTIES TIMEOUT 30)
+
 qt_add_executable(m6_leased_helper_host_tests M6LeasedHelperHostTests.cpp)
 target_link_libraries(m6_leased_helper_host_tests PRIVATE interceptor_network Qt6::Test)
 add_test(NAME m6_leased_helper_host COMMAND m6_leased_helper_host_tests)

@@ -1,4 +1,6 @@
+#define __STDC_WANT_LIB_EXT1__ 1
 #include "ProxyServer.hpp"
+#include "TransparentProxyProbeProtocol.hpp"
 #include <QAbstractHttpServer>
 #include <QElapsedTimer>
 #include <QHash>
@@ -22,10 +24,12 @@
 #include <QThread>
 #include <QTimer>
 #include <QUrl>
+#include <Security/SecRandom.h>
 #include <atomic>
 #include <deque>
 #include <mutex>
 #include <set>
+#include <string.h>
 namespace interceptor {
 namespace {
 std::atomic<quint64> requestSequence{1};
@@ -193,6 +197,7 @@ class LimitedTcpServer : public QTcpServer {
   public:
     using QTcpServer::QTcpServer;
     QHostAddress allowedClientAddress;
+    bool allowProbeLoopback = false;
     int count = 0;
     QHash<QTcpSocket *, int> responding;
     QHash<quint16, QPointer<QTcpSocket>> sockets;
@@ -202,7 +207,8 @@ class LimitedTcpServer : public QTcpServer {
             delete socket;
             return;
         }
-        if (!allowedClientAddress.isNull() && socket->peerAddress() != allowedClientAddress) {
+        if (!allowedClientAddress.isNull() && socket->peerAddress() != allowedClientAddress &&
+            !(allowProbeLoopback && socket->peerAddress() == QHostAddress::LocalHost)) {
             socket->abort();
             socket->deleteLater();
             return;
@@ -249,6 +255,7 @@ class Engine : public QAbstractHttpServer {
     QTimer holdTimer{this};
     SessionConfig config;
     ProxyOptions options;
+    QByteArray probeSecret;
     QNetworkAccessManager manager{this};
     LimitedTcpServer listener{this};
     std::vector<std::shared_ptr<Transfer>> transfers;
@@ -270,6 +277,7 @@ class Engine : public QAbstractHttpServer {
         listener.allowedClientAddress = options.allowedClientIp.isEmpty()
                                             ? QHostAddress()
                                             : QHostAddress(options.allowedClientIp);
+        listener.allowProbeLoopback = options.transparentRedirect;
         holdTimer.setInterval(25);
         connect(&holdTimer, &QTimer::timeout, this, [this] {
             const auto current = holds;
@@ -303,6 +311,10 @@ class Engine : public QAbstractHttpServer {
     void shutdown() {
         shuttingDown = true;
         listener.close();
+        if (!probeSecret.isEmpty())
+            (void)memset_s(probeSecret.data(), static_cast<rsize_t>(probeSecret.size()), 0,
+                           static_cast<rsize_t>(probeSecret.size()));
+        probeSecret.clear();
         holdTimer.stop();
         const auto pending = holds;
         for (const auto &hold : pending)
@@ -346,6 +358,27 @@ class Engine : public QAbstractHttpServer {
                  QByteArray sendBody, QStringList audit, bool bypass, quint64 requestId) {
         if (shuttingDown) {
             responder.write(Status::ServiceUnavailable);
+            return true;
+        }
+        if (options.transparentRedirect && incoming.remoteAddress() == QHostAddress::LocalHost) {
+            const QByteArray path = incoming.url().path().toLatin1();
+            const QByteArray prefix(transparentProbePrefix);
+            const QByteArray hex = path.mid(prefix.size());
+            if (incoming.method() != QHttpServerRequest::Method::Get || !path.startsWith(prefix) ||
+                path.size() != prefix.size() + 64 || incoming.url().hasQuery() ||
+                !incoming.body().isEmpty() || !listener.isListening() || probeSecret.size() != 32) {
+                responder.write(Status::Forbidden);
+                return true;
+            }
+            const QByteArray nonce = QByteArray::fromHex(hex);
+            if (nonce.size() != 32 || nonce.toHex() != hex) {
+                responder.write(Status::BadRequest);
+                return true;
+            }
+            const TransparentProxyProbeTarget target{config.interfaceName, options.allowedClientIp,
+                                                     config.serverIp, config.serverPort,
+                                                     static_cast<int>(listener.serverPort())};
+            responder.write(transparentProbeMac(target, nonce, probeSecret), "text/plain");
             return true;
         }
         const auto headers = incoming.headers();
@@ -748,7 +781,16 @@ bool ProxyServer::start(const SessionConfig &config, const ProxyOptions &options
         [this, config, options, anchor] {
             impl_->engine = new Engine(config, options);
             impl_->engine->modification = modification_;
-            if (impl_->engine->begin()) {
+            if (options.transparentRedirect) {
+                impl_->engine->probeSecret.resize(32);
+                if (SecRandomCopyBytes(kSecRandomDefault, 32, impl_->engine->probeSecret.data()) !=
+                    errSecSuccess) {
+                    (void)memset_s(impl_->engine->probeSecret.data(), 32, 0, 32);
+                    impl_->engine->probeSecret.clear();
+                }
+            }
+            if ((!options.transparentRedirect || impl_->engine->probeSecret.size() == 32) &&
+                impl_->engine->begin()) {
                 impl_->port = impl_->engine->listener.serverPort();
                 impl_->boundAddress = impl_->engine->listener.serverAddress().toString();
             }
@@ -797,6 +839,16 @@ std::optional<TransparentProxyReadiness> ProxyServer::transparentReadiness() con
         !isTransparentReadinessCurrent(*impl_->transparentReadiness))
         return std::nullopt;
     return impl_->transparentReadiness;
+}
+std::optional<QByteArray> ProxyServer::transparentProbeSecret() const {
+    if (QThread::currentThread() != thread() || !impl_ || !impl_->transparentReadiness ||
+        !isTransparentReadinessCurrent(*impl_->transparentReadiness))
+        return std::nullopt;
+    QByteArray secret;
+    QMetaObject::invokeMethod(
+        impl_->engine, [this, &secret] { secret = impl_->engine->probeSecret; },
+        Qt::BlockingQueuedConnection);
+    return secret.size() == 32 ? std::optional<QByteArray>(std::move(secret)) : std::nullopt;
 }
 bool ProxyServer::isTransparentReadinessCurrent(const TransparentProxyReadiness &readiness) const {
     if (QThread::currentThread() != thread())

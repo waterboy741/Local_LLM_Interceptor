@@ -1,4 +1,5 @@
 #include "HelperPreMutationGate.hpp"
+#include "MacNeighborIdentityVerifier.hpp"
 
 namespace interceptor {
 namespace {
@@ -15,6 +16,19 @@ bool exactNeighbor(NeighborIdentityVerifier &verifier, const QString &interfaceN
 bool SystemTransparentListenerVerifier::verify(const TransparentProxyProbeTarget &target,
                                                const QByteArray &secret, int timeoutMs) {
     return verifyTransparentProxyProbe(target, secret, timeoutMs);
+}
+
+HelperPreMutationDependencies systemHelperPreMutationDependencies() {
+    static SystemTransparentListenerVerifier listener;
+    return {systemLabProbe(), systemNetworkCommandRunner(), systemPfCommandRunner(),
+            systemMacNeighborIdentityVerifier(), listener};
+}
+
+HelperPreMutationResult HelperPreMutationGate::verify(const SessionSnapshot &snapshot,
+                                                      const QByteArray &probeSecret,
+                                                      HelperPreMutationDependencies dependencies) {
+    return verify(snapshot, probeSecret, dependencies.labProbe, dependencies.networkRunner,
+                  dependencies.pfRunner, dependencies.neighbors, dependencies.listener);
 }
 
 HelperPreMutationResult

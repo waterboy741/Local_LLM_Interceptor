@@ -42,11 +42,25 @@ struct HelperPreMutationResult {
     QString statusCode;
 };
 
+struct HelperPreMutationDependencies {
+    LabProbe &labProbe;
+    NetworkCommandRunner &networkRunner;
+    PfCommandRunner &pfRunner;
+    NeighborIdentityVerifier &neighbors;
+    TransparentListenerVerifier &listener;
+};
+
+// Binds the existing read-only macOS adapters. This does not confer root or PF ownership.
+HelperPreMutationDependencies systemHelperPreMutationDependencies();
+
 // Read-only, point-in-time gate. It must run on the helper immediately before any PF mutation;
 // the caller must not cache a successful result. No mutation occurs in this class. Historical
 // facts from the handoff are compared against fresh observations and never used as authority.
 class HelperPreMutationGate final {
   public:
+    static HelperPreMutationResult verify(const SessionSnapshot &snapshot,
+                                          const QByteArray &probeSecret,
+                                          HelperPreMutationDependencies dependencies);
     static HelperPreMutationResult
     verify(const SessionSnapshot &snapshot, const QByteArray &probeSecret, LabProbe &labProbe,
            NetworkCommandRunner &networkRunner, PfCommandRunner &pfRunner,

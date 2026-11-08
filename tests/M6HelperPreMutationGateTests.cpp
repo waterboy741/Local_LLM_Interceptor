@@ -1,4 +1,5 @@
 #include "proxy/HelperPreMutationGate.hpp"
+#include "proxy/MacNeighborIdentityVerifier.hpp"
 
 #include <QMap>
 #include <QtTest>
@@ -189,6 +190,14 @@ class M6HelperPreMutationGateTests final : public QObject {
                                              fakes.pf, fakes.neighbors, fakes.listener);
     }
 
+    static HelperPreMutationResult verifyBundle(Fakes &fakes,
+                                                const QByteArray &secret = QByteArray(32, 'p')) {
+        return HelperPreMutationGate::verify(
+            makeSnapshot(), secret,
+            HelperPreMutationDependencies{fakes.lab, fakes.network, fakes.pf, fakes.neighbors,
+                                          fakes.listener});
+    }
+
     static bool containsPrefix(const QStringList &calls, const QString &prefix) {
         return std::any_of(calls.cbegin(), calls.cend(),
                            [&prefix](const QString &call) { return call.startsWith(prefix); });
@@ -197,7 +206,7 @@ class M6HelperPreMutationGateTests final : public QObject {
   private slots:
     void passesOnlyAfterFreshNetworkPfNeighborAndListenerChecks() {
         Fakes fakes;
-        const auto result = verify(fakes);
+        const auto result = verifyBundle(fakes);
         QVERIFY(result.ready);
         QCOMPARE(result.statusCode, QStringLiteral("ready"));
         QCOMPARE(fakes.listener.calls, 1);
@@ -207,14 +216,22 @@ class M6HelperPreMutationGateTests final : public QObject {
         QCOMPARE(fakes.listener.observedTarget.upstreamIp, QStringLiteral("192.0.2.30"));
         QCOMPARE(fakes.listener.observedTarget.upstreamPort, 18081);
         QCOMPARE(fakes.listener.observedTarget.listenerPort, 11434);
-        QCOMPARE(fakes.calls.last(), QStringLiteral("listener:1000"));
-        QVERIFY(containsPrefix(fakes.calls,
-                               QStringLiteral("tcp:synthetic0:192.0.2.20:192.0.2.30:18081:")));
+        QCOMPARE(fakes.calls,
+                 QStringList({QStringLiteral("interface:synthetic0"),
+                              QStringLiteral("route:0:synthetic0:192.0.2.10"),
+                              QStringLiteral("route:1:synthetic0:192.0.2.30"),
+                              QStringLiteral("route:2:synthetic0:192.0.2.10"),
+                              QStringLiteral("route:3:synthetic0:192.0.2.30"),
+                              QStringLiteral("neighbor:192.0.2.10"),
+                              QStringLiteral("neighbor:192.0.2.30"),
+                              QStringLiteral("tcp:synthetic0:192.0.2.20:192.0.2.30:18081:1500"),
+                              QStringLiteral("pf:0"), QStringLiteral("pf:1"),
+                              QStringLiteral("pf:2"), QStringLiteral("listener:1000")}));
     }
 
     void rejectsInvalidSecretBeforeAnyObservation() {
         Fakes fakes;
-        const auto result = verify(fakes, QByteArray(31, 'p'));
+        const auto result = verifyBundle(fakes, QByteArray(31, 'p'));
         QVERIFY(!result.ready);
         QCOMPARE(result.statusCode, QStringLiteral("snapshot_or_probe_secret_invalid"));
         QVERIFY(fakes.calls.isEmpty());
@@ -299,6 +316,17 @@ class M6HelperPreMutationGateTests final : public QObject {
         QVERIFY(containsPrefix(fakes.calls, QStringLiteral("tcp:")));
         QVERIFY(containsPrefix(fakes.calls, QStringLiteral("pf:")));
         QCOMPARE(fakes.calls[fakes.calls.size() - 2], QStringLiteral("pf:2"));
+    }
+
+    void productionFactoryBindsMacVerifierWithoutRunningSystemQueries() {
+        const auto dependencies = systemHelperPreMutationDependencies();
+        QCOMPARE(&dependencies.labProbe, &systemLabProbe());
+        QCOMPARE(&dependencies.networkRunner, &systemNetworkCommandRunner());
+        QCOMPARE(&dependencies.pfRunner, &systemPfCommandRunner());
+        QCOMPARE(&dependencies.neighbors, &systemMacNeighborIdentityVerifier());
+        QVERIFY(dynamic_cast<MacNeighborIdentityVerifier *>(&dependencies.neighbors) != nullptr);
+        QVERIFY(dynamic_cast<SystemTransparentListenerVerifier *>(&dependencies.listener) !=
+                nullptr);
     }
 };
 

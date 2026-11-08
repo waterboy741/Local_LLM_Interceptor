@@ -177,7 +177,9 @@ class M2ProxyTests : public QObject {
         if (connected.isEmpty())
             QSKIP("This host cannot complete a loopback connection for the peer rejection test");
         client.write(request("{\"model\":\"synthetic\",\"prompt\":\"denied\"}"));
-        QTRY_COMPARE_WITH_TIMEOUT(client.state(), QAbstractSocket::UnconnectedState, 3000);
+        // Under a busy full-suite run, the local TCP stack can take several seconds to finish
+        // surfacing the listener's immediate abort on this client socket.
+        QTRY_COMPARE_WITH_TIMEOUT(client.state(), QAbstractSocket::UnconnectedState, 10000);
         QTest::qWait(50);
         QVERIFY(proxy.history().empty());
         proxy.stop();

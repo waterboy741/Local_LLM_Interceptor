@@ -7,6 +7,7 @@
 #include <QFileDialog>
 #include <QFontDatabase>
 #include <QFormLayout>
+#include <QFutureWatcher>
 #include <QHBoxLayout>
 #include <QHostAddress>
 #include <QJsonArray>
@@ -29,6 +30,7 @@
 #include <QTextEdit>
 #include <QTimer>
 #include <QVBoxLayout>
+#include <QtConcurrent/QtConcurrentRun>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -150,6 +152,11 @@ QString jsonDiff(const QByteArray &original, const QByteArray &edited) {
 } // namespace
 
 MainWindow::MainWindow(SessionController *controller, QWidget *parent)
+    : MainWindow(controller, [] { return XpcReadOnlyServiceClient{}.status(); }, parent) {}
+
+MainWindow::MainWindow(SessionController *controller,
+                       std::function<XpcReadOnlyClientResult()> helperStatusRequest,
+                       QWidget *parent)
     : QMainWindow(parent), controller_(controller) {
     Q_ASSERT(controller_);
     setWindowTitle("llm_interceptor");
@@ -215,6 +222,7 @@ MainWindow::MainWindow(SessionController *controller, QWidget *parent)
     prepare->setEnabled(interface_->count() > 0);
     layout->addWidget(prepare);
     auto *stop = new QPushButton("Clear session", panel);
+    stop->setObjectName("clearSessionButton");
     layout->addWidget(stop);
     status_ = new QLabel(
         interface_->count() == 0
@@ -227,6 +235,57 @@ MainWindow::MainWindow(SessionController *controller, QWidget *parent)
     startProxy->setObjectName("startObserveButton");
     startProxy->setEnabled(false);
     layout->addWidget(startProxy);
+    auto *helperRow = new QWidget(panel);
+    auto *helperLayout = new QHBoxLayout(helperRow);
+    helperLayout->setContentsMargins(0, 0, 0, 0);
+    auto *checkHelperStatus = new QPushButton("Check helper status", helperRow);
+    checkHelperStatus->setObjectName("checkHelperStatusButton");
+    auto *helperStatus = new QLabel("Helper status not checked.", helperRow);
+    helperStatus->setObjectName("helperStatus");
+    helperStatus->setWordWrap(true);
+    helperLayout->addWidget(checkHelperStatus);
+    helperLayout->addWidget(helperStatus, 1);
+    layout->addWidget(helperRow);
+    connect(checkHelperStatus, &QPushButton::clicked, this,
+            [this, checkHelperStatus, helperStatus, helperStatusRequest] {
+                checkHelperStatus->setEnabled(false);
+                helperStatus->setText("Checking helper service…");
+                const auto requestGeneration = ++helperStatusGeneration_;
+                auto *watcher = new QFutureWatcher<XpcReadOnlyClientResult>(this);
+                connect(watcher, &QFutureWatcher<XpcReadOnlyClientResult>::finished, this,
+                        [this, watcher, checkHelperStatus, helperStatus, requestGeneration] {
+                            // The worker owns only the copied request callable. Its bounded XPC
+                            // wait can finish after this window closes or the session is cleared.
+                            if (requestGeneration != helperStatusGeneration_) {
+                                watcher->deleteLater();
+                                return;
+                            }
+                            const auto result = watcher->result();
+                            if (result.succeeded()) {
+                                helperStatus->setText(
+                                    QString("Helper available — state: %1 (protocol v%2).")
+                                        .arg(result.state)
+                                        .arg(result.protocolVersion));
+                            } else if (result.status ==
+                                       XpcReadOnlyClientStatus::ServiceUnavailable) {
+                                helperStatus->setText(
+                                    "Helper unavailable — launchd service is not available.");
+                            } else if (result.status == XpcReadOnlyClientStatus::TimedOut) {
+                                helperStatus->setText("Helper status check timed out.");
+                            } else {
+                                helperStatus->setText("Helper status check failed.");
+                            }
+                            checkHelperStatus->setEnabled(true);
+                            watcher->deleteLater();
+                        });
+                watcher->setFuture(QtConcurrent::run(helperStatusRequest));
+            });
+    connect(stop, &QPushButton::clicked, this, [this, helperStatus, checkHelperStatus] {
+        ++helperStatusGeneration_;
+        helperStatus->setText("Helper status not checked.");
+        checkHelperStatus->setEnabled(true);
+        controller_->stop();
+    });
     auto *requestPage = new QWidget(tabs);
     auto *requestLayout = new QVBoxLayout(requestPage);
     tabs->addTab(requestPage, "Requests");
@@ -844,7 +903,6 @@ MainWindow::MainWindow(SessionController *controller, QWidget *parent)
         if (!controller_->prepare(config))
             status_->setText("Clear the current session before preparing another.");
     });
-    connect(stop, &QPushButton::clicked, controller_, &SessionController::stop);
     connect(controller_, &SessionController::stateChanged, this,
             [this, prepare, refresh](SessionController::State state) {
                 const bool idle = state == SessionController::State::Idle;
@@ -861,6 +919,7 @@ MainWindow::MainWindow(SessionController *controller, QWidget *parent)
     resize(680, 660);
 }
 void MainWindow::closeEvent(QCloseEvent *event) {
+    ++helperStatusGeneration_;
     proxy_.stop();
     controller_->stop();
     QMainWindow::closeEvent(event);

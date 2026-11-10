@@ -1,7 +1,9 @@
 #pragma once
+#include "network/XpcReadOnlyServiceClient.hpp"
 #include "proxy/ProxyServer.hpp"
 #include "session/SessionController.hpp"
 #include <QMainWindow>
+#include <functional>
 class QLineEdit;
 class QComboBox;
 class QSpinBox;
@@ -13,6 +15,9 @@ class MainWindow : public QMainWindow {
     Q_OBJECT
   public:
     explicit MainWindow(SessionController *controller, QWidget *parent = nullptr);
+    MainWindow(SessionController *controller,
+               std::function<XpcReadOnlyClientResult()> helperStatusRequest,
+               QWidget *parent = nullptr);
 
   protected:
     void closeEvent(QCloseEvent *event) override;
@@ -29,5 +34,6 @@ class MainWindow : public QMainWindow {
     QTextEdit *details_;
     QListWidget *messageItems_;
     QTextEdit *messageDetails_;
+    quint64 helperStatusGeneration_ = 0;
 };
 } // namespace interceptor

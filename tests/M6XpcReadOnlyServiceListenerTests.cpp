@@ -4,13 +4,23 @@
 
 #include <xpc/xpc.h>
 
+#include <atomic>
+
 namespace interceptor {
+
+class M6XpcReadOnlyServiceListenerTestAccess final {
+  public:
+    static bool startWithAnonymousListener(XpcReadOnlyServiceListener &listener,
+                                           xpc_connection_t connection, QString *error) {
+        return listener.startWithAnonymousListenerForTesting(connection, error);
+    }
+};
 
 class FakeCodeSignaturePolicy final : public XpcPeerCodeSignaturePolicy {
   public:
     bool authenticate(xpc_object_t message, const QByteArray &expectedRequirement,
                       QString *error) override {
-        ++calls;
+        calls.fetch_add(1, std::memory_order_relaxed);
         lastMessage = message;
         lastRequirement = expectedRequirement;
         if (error)
@@ -18,7 +28,7 @@ class FakeCodeSignaturePolicy final : public XpcPeerCodeSignaturePolicy {
         return accepted;
     }
 
-    int calls = 0;
+    std::atomic_int calls{0};
     xpc_object_t lastMessage = nullptr;
     QByteArray lastRequirement;
     QString errorText;
@@ -84,7 +94,7 @@ class M6XpcReadOnlyServiceListenerTests final : public QObject {
         QVERIFY(request != nullptr);
 
         QCOMPARE(adapter.handleMessage(request), nullptr);
-        QCOMPARE(policy.calls, 1);
+        QCOMPARE(policy.calls.load(std::memory_order_relaxed), 1);
         QCOMPARE(policy.lastMessage, request);
         QCOMPARE(policy.lastRequirement, QByteArrayLiteral("trusted requirement"));
         xpc_release(request);
@@ -100,7 +110,7 @@ class M6XpcReadOnlyServiceListenerTests final : public QObject {
         // A locally-created dictionary has no XPC reply context; the adapter
         // still authenticates and accepts the protocol before reply creation.
         QCOMPARE(adapter.handleMessage(request), nullptr);
-        QCOMPARE(policy.calls, 1);
+        QCOMPARE(policy.calls.load(std::memory_order_relaxed), 1);
         QCOMPARE(policy.lastMessage, request);
         xpc_release(request);
     }
@@ -126,7 +136,7 @@ class M6XpcReadOnlyServiceListenerTests final : public QObject {
         xpc_dictionary_set_string(extra, "capability", "should-not-be-accepted");
         QCOMPARE(adapter.handleMessage(extra), nullptr);
         xpc_release(extra);
-        QCOMPARE(policy.calls, 3);
+        QCOMPARE(policy.calls.load(std::memory_order_relaxed), 3);
     }
 
     void listenerConfigurationFailuresStayStoppedAndStopIsIdempotent() {
@@ -163,8 +173,50 @@ class M6XpcReadOnlyServiceListenerTests final : public QObject {
         QVERIFY(!missingRequirement.start(&error));
         QCOMPARE(error, QStringLiteral("xpc_listener_trusted_requirement_missing"));
         QVERIFY(!missingRequirement.isRunning());
-        QCOMPARE(configuredPolicy.calls, 0);
-        QCOMPARE(missingPolicy.calls, 0);
+        QCOMPARE(configuredPolicy.calls.load(std::memory_order_relaxed), 0);
+        QCOMPARE(missingPolicy.calls.load(std::memory_order_relaxed), 0);
+    }
+
+    void anonymousEndpointRoundTripsReadOnlyReplyAndStops() {
+        FakeCodeSignaturePolicy policy;
+        XpcControlRequestGate gate(QByteArrayLiteral("trusted requirement"), policy);
+        XpcReadOnlyControlAdapter adapter(gate);
+        XpcReadOnlyServiceListener listener(QByteArrayLiteral("org.example.interceptor"), adapter);
+
+        xpc_connection_t anonymousListener = xpc_connection_create(nullptr, nullptr);
+        QVERIFY(anonymousListener != nullptr);
+        xpc_endpoint_t endpoint = xpc_endpoint_create(anonymousListener);
+        QVERIFY(endpoint != nullptr);
+
+        QString error;
+        QVERIFY2(M6XpcReadOnlyServiceListenerTestAccess::startWithAnonymousListener(
+                     listener, anonymousListener, &error),
+                 qPrintable(error));
+        QVERIFY(listener.isRunning());
+
+        xpc_connection_t client = xpc_connection_create_from_endpoint(endpoint);
+        xpc_release(endpoint);
+        QVERIFY(client != nullptr);
+        xpc_connection_set_event_handler(client, ^(xpc_object_t){
+                                         });
+        xpc_connection_activate(client);
+
+        xpc_object_t request = message("probe");
+        QVERIFY(request != nullptr);
+        xpc_object_t reply = xpc_connection_send_message_with_reply_sync(client, request);
+        xpc_release(request);
+        QVERIFY2(reply != nullptr, "anonymous XPC endpoint did not return a reply");
+        QCOMPARE(xpc_get_type(reply), XPC_TYPE_DICTIONARY);
+        QVERIFY(xpc_dictionary_get_bool(reply, "ok"));
+        QCOMPARE(valueString(reply, "service"), QStringLiteral("llm_interceptor"));
+        QCOMPARE(xpc_dictionary_get_uint64(reply, "protocol_version"), 1ULL);
+        QCOMPARE(policy.calls.load(std::memory_order_relaxed), 1);
+        xpc_release(reply);
+
+        listener.stop();
+        QVERIFY(!listener.isRunning());
+        xpc_connection_cancel(client);
+        xpc_release(client);
     }
 };
 

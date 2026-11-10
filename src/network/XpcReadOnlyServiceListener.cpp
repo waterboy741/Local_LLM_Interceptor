@@ -17,6 +17,12 @@ bool fail(QString *error, const char *reason) {
     return false;
 }
 
+void cancelAndRelease(xpc_connection_t connection) {
+    xpc_connection_activate(connection);
+    xpc_connection_cancel(connection);
+    xpc_release(connection);
+}
+
 bool validServiceName(const QByteArray &name) {
     if (name.isEmpty() || name.size() > maximumServiceNameLength || name.startsWith('.') ||
         name.endsWith('.') || !name.contains('.'))
@@ -130,17 +136,7 @@ bool XpcReadOnlyServiceListener::start(QString *error) {
           startError = QStringLiteral("xpc_listener_create_failed");
           return;
       }
-
-      const std::shared_ptr<CallbackGuard> guard = callbackGuard_;
-      xpc_connection_set_event_handler(listener_, ^(xpc_object_t event) {
-        if (!guard->alive.load() || !guard->owner)
-            return;
-        if (xpc_get_type(event) == XPC_TYPE_CONNECTION)
-            guard->owner->acceptConnection(reinterpret_cast<xpc_connection_t>(event));
-        else if (xpc_get_type(event) == XPC_TYPE_ERROR)
-            guard->owner->handleEvent(guard->owner->listener_, event);
-      });
-      xpc_connection_resume(listener_);
+      installListenerOnQueue();
       running_ = true;
       started = true;
     });
@@ -149,6 +145,56 @@ bool XpcReadOnlyServiceListener::start(QString *error) {
         return fail(error, startError.isEmpty() ? "xpc_listener_create_failed"
                                                 : startError.toUtf8().constData());
     return true;
+}
+
+bool XpcReadOnlyServiceListener::startWithAnonymousListenerForTesting(xpc_connection_t listener,
+                                                                      QString *error) {
+    if (error)
+        error->clear();
+    if (!listener)
+        return fail(error, "xpc_listener_create_failed");
+    if (!queue_) {
+        cancelAndRelease(listener);
+        return fail(error, "xpc_listener_create_failed");
+    }
+    if (!validServiceName(serviceName_)) {
+        cancelAndRelease(listener);
+        return fail(error, "xpc_listener_service_name_invalid");
+    }
+    if (!adapter_.isConfigured()) {
+        cancelAndRelease(listener);
+        return fail(error, "xpc_listener_trusted_requirement_missing");
+    }
+
+    __block bool started = false;
+    dispatch_sync(queue_, ^{
+      if (running_) {
+          cancelAndRelease(listener);
+          started = true;
+          return;
+      }
+      peersAccepted_ = 0;
+      messagesReceived_ = 0;
+      listener_ = listener;
+      installListenerOnQueue();
+      running_ = true;
+      started = true;
+    });
+    return started;
+}
+
+void XpcReadOnlyServiceListener::installListenerOnQueue() {
+    const std::shared_ptr<CallbackGuard> guard = callbackGuard_;
+    xpc_connection_set_target_queue(listener_, queue_);
+    xpc_connection_set_event_handler(listener_, ^(xpc_object_t event) {
+      if (!guard->alive.load() || !guard->owner)
+          return;
+      if (xpc_get_type(event) == XPC_TYPE_CONNECTION)
+          guard->owner->acceptConnection(reinterpret_cast<xpc_connection_t>(event));
+      else if (xpc_get_type(event) == XPC_TYPE_ERROR)
+          guard->owner->handleEvent(guard->owner->listener_, event);
+    });
+    xpc_connection_activate(listener_);
 }
 
 void XpcReadOnlyServiceListener::stop() {
@@ -187,7 +233,7 @@ void XpcReadOnlyServiceListener::acceptConnection(xpc_connection_t connection) {
       if (guard->alive.load() && guard->owner)
           guard->owner->handleEvent(connection, event);
     });
-    xpc_connection_resume(connection);
+    xpc_connection_activate(connection);
 }
 
 void XpcReadOnlyServiceListener::handleEvent(xpc_connection_t connection, xpc_object_t event) {

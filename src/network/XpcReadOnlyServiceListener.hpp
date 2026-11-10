@@ -45,6 +45,8 @@ class XpcReadOnlyServiceListener final {
     bool isRunning() const;
 
   private:
+    friend class M6XpcReadOnlyServiceListenerTestAccess;
+
     struct CallbackGuard;
     struct PeerConnection {
         xpc_connection_t connection = nullptr;
@@ -53,6 +55,9 @@ class XpcReadOnlyServiceListener final {
 
     void acceptConnection(xpc_connection_t connection);
     void handleEvent(xpc_connection_t connection, xpc_object_t event);
+    // Test-only seam. Consumes the listener's +1 reference on every path.
+    bool startWithAnonymousListenerForTesting(xpc_connection_t listener, QString *error);
+    void installListenerOnQueue();
     void stopOnQueue();
 
     const QByteArray serviceName_;

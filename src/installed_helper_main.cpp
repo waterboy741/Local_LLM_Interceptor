@@ -1,9 +1,14 @@
 #include "network/InstalledHelperBootstrap.hpp"
+#include "network/LaunchdMachServiceBootstrap.hpp"
+#include "network/MachServicePeerAuthenticator.hpp"
+#include "network/XpcControlRequestGate.hpp"
+#include "network/XpcReadOnlyServiceListener.hpp"
 
 #include <QCoreApplication>
 #include <QTextStream>
 
 #include <limits>
+#include <memory>
 #include <unistd.h>
 
 namespace {
@@ -28,13 +33,17 @@ int main(int argc, char *argv[]) {
     const QStringList args = app.arguments();
     const bool checkingStateDirectory =
         args.size() == 3 && args.at(1) == QStringLiteral("--check-state-dir");
+    const bool requestingMachService = args.size() == 4 &&
+                                       args.at(1) == QStringLiteral("--mach-service") &&
+                                       args.at(2) == QStringLiteral("--state-dir");
     QString statePath;
     int bootstrapFd = -1;
     const bool requestingProcess = processArguments(args, &statePath, &bootstrapFd);
-    if (!checkingStateDirectory && !requestingProcess) {
+    if (!checkingStateDirectory && !requestingProcess && !requestingMachService) {
         err << "usage: llm_interceptor_helper --check-state-dir ABSOLUTE_PATH\n"
                "       llm_interceptor_helper --process --state-dir ABSOLUTE_PATH "
-               "--bootstrap-fd FD\n";
+               "--bootstrap-fd FD\n"
+               "       llm_interceptor_helper --mach-service --state-dir PATH\n";
         return 2;
     }
     if (::geteuid() != 0) {
@@ -43,6 +52,8 @@ int main(int argc, char *argv[]) {
     }
     if (checkingStateDirectory)
         statePath = args.at(2);
+    else if (requestingMachService)
+        statePath = args.at(3);
 
     QString failure;
     auto directory = interceptor::InstalledHelperStateDirectory::open(statePath, 0, &failure);
@@ -54,6 +65,36 @@ int main(int argc, char *argv[]) {
         Q_UNUSED(bootstrapFd);
         err << "production_peer_authenticator_unavailable\n";
         return 5;
+    }
+    if (requestingMachService) {
+        interceptor::LaunchdMachServiceConfig config;
+        if (!interceptor::loadLaunchdMachServiceConfig(directory->descriptor(), &config,
+                                                       &failure)) {
+            err << failure << '\n';
+            return 6;
+        }
+
+        interceptor::MacXpcPeerCodeSignaturePolicy peerPolicy;
+        std::unique_ptr<interceptor::XpcControlRequestGate> gate;
+        std::unique_ptr<interceptor::XpcReadOnlyControlAdapter> adapter;
+        std::unique_ptr<interceptor::XpcReadOnlyServiceListener> listener;
+        const bool started = interceptor::startConfiguredLaunchdMachService(
+            config,
+            [&](const QByteArray &serviceName, const QByteArray &trustedRequirement,
+                QString *startError) {
+                gate = std::make_unique<interceptor::XpcControlRequestGate>(trustedRequirement,
+                                                                            peerPolicy);
+                adapter = std::make_unique<interceptor::XpcReadOnlyControlAdapter>(*gate);
+                listener = std::make_unique<interceptor::XpcReadOnlyServiceListener>(serviceName,
+                                                                                     *adapter);
+                return listener->start(startError);
+            },
+            &failure);
+        if (!started) {
+            err << failure << '\n';
+            return 7;
+        }
+        return app.exec();
     }
     QTextStream(stdout) << "state_directory_ready\n";
     return 0;

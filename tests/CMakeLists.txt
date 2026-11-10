@@ -183,6 +183,14 @@ add_test(NAME m6_xpc_read_only_service_listener
     COMMAND m6_xpc_read_only_service_listener_tests)
 set_tests_properties(m6_xpc_read_only_service_listener PROPERTIES TIMEOUT 30)
 
+qt_add_executable(m6_xpc_read_only_service_client_tests
+    M6XpcReadOnlyServiceClientTests.cpp)
+target_link_libraries(m6_xpc_read_only_service_client_tests PRIVATE
+    interceptor_network Qt6::Test)
+add_test(NAME m6_xpc_read_only_service_client
+    COMMAND m6_xpc_read_only_service_client_tests)
+set_tests_properties(m6_xpc_read_only_service_client PROPERTIES TIMEOUT 30)
+
 qt_add_executable(m6_launchd_mach_service_bootstrap_tests
     M6LaunchdMachServiceBootstrapTests.cpp)
 target_link_libraries(m6_launchd_mach_service_bootstrap_tests PRIVATE

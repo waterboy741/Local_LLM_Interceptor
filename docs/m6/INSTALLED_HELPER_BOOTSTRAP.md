@@ -38,7 +38,9 @@ python3 scripts/package_launchd_helper.py \
   --output-dir /private/tmp/llm-interceptor-launchd-review
 ```
 
-The staging directory must be an absolute, empty or new path outside macOS system locations. The helper is staged with mode `0755` and the plist with mode `0644`, preserving their intended relative locations under `/Library`. The script does not sign, install, bootstrap, enable, unload, or remove a service. Review the staged files before any separately authorized installation work.
+The helper input must be a non-empty regular file. Relative helper paths are interpreted from the current working directory. The staging directory must be an absolute, empty or new path outside macOS system locations. The helper and output paths must be disjoint, and both paths must be free of symlinks and `..` components. The script repeats these checks immediately before staging. Use a trusted local filesystem and avoid concurrent changes to either path during staging.
+
+The helper is staged with mode `0755` and the plist with mode `0644`, preserving their intended relative locations under `/Library`. The script does not sign, install, bootstrap, enable, unload, or remove a service. Review the staged files before any separately authorized installation work.
 
 Before installation, review the helper's signature and ownership and provision the exact signed GUI identity as described above. The staged plist has not been loaded into launchd. Even with valid configuration, Mach service mode returns only read-only probe/status replies: it starts no helper host, accepts no capability, and authorizes no PF or ARP. The `--process` mode still fails closed. See [XPC control request gate](XPC_CONTROL_REQUEST_GATE.md).
 

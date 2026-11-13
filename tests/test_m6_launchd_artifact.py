@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import os
 import plistlib
+import runpy
+import shutil
 import stat
 import subprocess
 import sys
@@ -31,6 +33,174 @@ HELPER_ARGUMENTS = [
 
 
 class M6LaunchdArtifactTests(unittest.TestCase):
+    def run_packager(self, helper: Path, output: Path) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [
+                sys.executable,
+                str(PACKAGER_PATH),
+                "--helper",
+                str(helper),
+                "--output-dir",
+                str(output),
+            ],
+            cwd=REPOSITORY_ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+    def test_packager_rejects_private_etc(self) -> None:
+        validate = runpy.run_path(str(PACKAGER_PATH))["validate_staging_directory"]
+        # Check validation directly so a regression cannot write under /private.
+        for output in (Path("/private/etc"), Path("/private/Etc")):
+            with self.subTest(output=output):
+                with self.assertRaisesRegex(ValueError, "system"):
+                    validate(output)
+
+    def validate_plist_bytes(self, contents: bytes) -> subprocess.CompletedProcess[str]:
+        with tempfile.TemporaryDirectory(dir="/private/tmp") as temp_name:
+            root = Path(temp_name)
+            packager = root / PACKAGER_PATH.relative_to(REPOSITORY_ROOT)
+            packager.parent.mkdir()
+            shutil.copyfile(PACKAGER_PATH, packager)
+            plist = root / PLIST_PATH.relative_to(REPOSITORY_ROOT)
+            plist.parent.mkdir(parents=True)
+            plist.write_bytes(contents)
+
+            return subprocess.run(
+                [sys.executable, str(packager), "--validate-only"],
+                cwd=root,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+    def test_packager_rejects_integer_mach_service(self) -> None:
+        config = self.load_plist()
+        config["MachServices"] = {SERVICE_LABEL: 1}
+        result = self.validate_plist_bytes(plistlib.dumps(config))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("launchd_helper_package_error", result.stderr)
+
+    def test_packager_rejects_duplicate_plist_key(self) -> None:
+        contents = plistlib.dumps(self.load_plist())
+        duplicate = contents.replace(
+            b"<key>UserName</key>",
+            b"<key>UserName</key><string>nobody</string><key>UserName</key>",
+        )
+        self.assertNotEqual(duplicate, contents)
+        result = self.validate_plist_bytes(duplicate)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("duplicate launchd plist key", result.stderr)
+
+    def test_packager_rejects_paths_traversing_through_a_file(self) -> None:
+        with tempfile.TemporaryDirectory(dir="/private/tmp") as temp_name:
+            root = Path(temp_name)
+            helper = root / "helper"
+            helper.write_bytes(b"synthetic helper")
+            stage = root / "stage"
+            for source, output in (
+                (helper, helper / ".." / "stage"),
+                (helper / ".." / "helper", stage),
+            ):
+                with self.subTest(source=source, output=output):
+                    result = self.run_packager(source, output)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn("parent traversal", result.stderr)
+                    self.assertFalse(stage.exists())
+
+    def test_packager_accepts_existing_empty_output(self) -> None:
+        with tempfile.TemporaryDirectory(dir="/private/tmp") as temp_name:
+            root = Path(temp_name)
+            helper = root / "helper"
+            helper.write_bytes(b"synthetic helper")
+            stage = root / "stage"
+            stage.mkdir()
+
+            result = self.run_packager(helper, stage)
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            staged_helper = (
+                stage / "Library" / "PrivilegedHelperTools" / "llm_interceptor_helper"
+            )
+            self.assertEqual(staged_helper.read_bytes(), helper.read_bytes())
+
+    def test_packager_rejects_symlinked_output_ancestor(self) -> None:
+        with tempfile.TemporaryDirectory(dir="/private/tmp") as temp_name:
+            root = Path(temp_name)
+            helper = root / "helper"
+            helper.write_bytes(b"synthetic helper")
+            target = root / "target"
+            target.mkdir()
+            alias = root / "alias"
+            alias.symlink_to(target, target_is_directory=True)
+
+            result = self.run_packager(helper, alias / "stage")
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("symlink", result.stderr)
+            self.assertEqual(list(target.iterdir()), [])
+
+    def test_packager_rejects_symlinked_helper_ancestor(self) -> None:
+        with tempfile.TemporaryDirectory(dir="/private/tmp") as temp_name:
+            root = Path(temp_name)
+            target = root / "target"
+            target.mkdir()
+            (target / "helper").write_bytes(b"synthetic helper")
+            alias = root / "alias"
+            alias.symlink_to(target, target_is_directory=True)
+            stage = root / "stage"
+
+            result = self.run_packager(alias / "helper", stage)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("symlink", result.stderr)
+            self.assertFalse(stage.exists())
+
+    def test_packager_rejects_input_inside_output(self) -> None:
+        with tempfile.TemporaryDirectory(dir="/private/tmp") as temp_name:
+            stage = Path(temp_name)
+            helper = stage / "helper"
+            original = b"synthetic helper"
+            helper.write_bytes(original)
+
+            result = self.run_packager(helper, stage)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("disjoint", result.stderr)
+            self.assertEqual(list(stage.iterdir()), [helper])
+            self.assertEqual(helper.read_bytes(), original)
+
+    def test_packager_rejects_output_inside_input(self) -> None:
+        with tempfile.TemporaryDirectory(dir="/private/tmp") as temp_name:
+            helper = Path(temp_name) / "helper"
+            original = b"synthetic helper"
+            helper.write_bytes(original)
+
+            result = self.run_packager(helper, helper / "stage")
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("disjoint", result.stderr)
+            self.assertEqual(helper.read_bytes(), original)
+
+    def test_packager_rejects_reusing_nonempty_output(self) -> None:
+        with tempfile.TemporaryDirectory(dir="/private/tmp") as temp_name:
+            root = Path(temp_name)
+            helper = root / "helper"
+            helper.write_bytes(b"synthetic helper")
+            stage = root / "stage"
+            stage.mkdir()
+            existing = stage / "keep"
+            original = b"existing content"
+            existing.write_bytes(original)
+
+            result = self.run_packager(helper, stage)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("empty", result.stderr)
+            self.assertEqual(list(stage.iterdir()), [existing])
+            self.assertEqual(existing.read_bytes(), original)
+
     def load_plist(self) -> dict[str, object]:
         with PLIST_PATH.open("rb") as plist_file:
             value = plistlib.load(plist_file)
@@ -110,11 +280,11 @@ class M6LaunchdArtifactTests(unittest.TestCase):
                     sys.executable,
                     str(PACKAGER_PATH),
                     "--helper",
-                    str(helper),
+                    helper.name,
                     "--output-dir",
                     str(stage),
                 ],
-                cwd=REPOSITORY_ROOT,
+                cwd=temp_root,
                 env=environment,
                 text=True,
                 capture_output=True,
@@ -135,8 +305,7 @@ class M6LaunchdArtifactTests(unittest.TestCase):
             self.assertEqual(staged_helper.read_bytes(), helper.read_bytes())
             self.assertEqual(stat.S_IMODE(staged_helper.stat().st_mode), 0o755)
             self.assertEqual(stat.S_IMODE(staged_plist.stat().st_mode), 0o644)
-            with staged_plist.open("rb") as plist_file:
-                self.assertEqual(plistlib.load(plist_file), self.load_plist())
+            self.assertEqual(staged_plist.read_bytes(), PLIST_PATH.read_bytes())
 
             staged_files = {
                 path.relative_to(stage).as_posix()

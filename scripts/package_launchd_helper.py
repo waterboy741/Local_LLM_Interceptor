@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import plistlib
 import shutil
+import stat
 import sys
 from typing import NoReturn
 
@@ -19,16 +20,30 @@ HELPER_INSTALL_PATH = "/Library/PrivilegedHelperTools/llm_interceptor_helper"
 STATE_DIRECTORY = "/private/var/db/llm_interceptor"
 STAGED_HELPER = Path("Library/PrivilegedHelperTools/llm_interceptor_helper")
 STAGED_PLIST = Path("Library/LaunchDaemons/org.local-llm-interceptor.helper.plist")
+SYSTEM_ROOTS = tuple(
+    Path(path)
+    for path in (
+        "/applications", "/bin", "/etc", "/library", "/private/etc",
+        "/private/var", "/sbin", "/system", "/usr", "/var",
+    )
+)
 
 
 def fail(message: str) -> NoReturn:
     raise ValueError(message)
 
 
+class UniqueKeyDictionary(dict):
+    def __setitem__(self, key: str, value: object) -> None:
+        if key in self:
+            fail(f"duplicate launchd plist key: {key}")
+        super().__setitem__(key, value)
+
+
 def load_and_validate_plist(path: Path = PLIST_SOURCE) -> bytes:
     try:
         contents = path.read_bytes()
-        config = plistlib.loads(contents)
+        config = plistlib.loads(contents, dict_type=UniqueKeyDictionary)
     except (OSError, plistlib.InvalidFileException, ValueError) as error:
         fail(f"launchd plist cannot be read: {error}")
 
@@ -42,42 +57,75 @@ def load_and_validate_plist(path: Path = PLIST_SOURCE) -> bytes:
         "GroupName": "wheel",
         "MachServices": {SERVICE_NAME: True},
     }
-    if config != expected:
+    if config != expected or config["MachServices"][SERVICE_NAME] is not True:
         fail("launchd plist does not match the reviewed fixed service configuration")
     return contents
+
+
+def resolve_without_symlinks(path: Path, label: str) -> Path:
+    current = Path("/")
+    for component in path.parts[1:]:
+        if component == "..":
+            fail(f"{label} path must not contain parent traversal")
+        current /= component
+        try:
+            if stat.S_ISLNK(current.lstat().st_mode):
+                fail(f"{label} path must not contain symlinked components")
+        except (FileNotFoundError, NotADirectoryError):
+            continue
+    return current
+
+
+def validate_helper(path: Path) -> Path:
+    helper = resolve_without_symlinks(Path.cwd() / path, "helper input")
+    details = helper.stat()
+    if not stat.S_ISREG(details.st_mode):
+        fail("helper input must be a regular, non-symlink file")
+    if details.st_size == 0:
+        fail("helper input is empty")
+    return helper
 
 
 def validate_staging_directory(path: Path) -> Path:
     if not path.is_absolute():
         fail("output directory must be an absolute staging path")
-    if path.is_symlink():
-        fail("output directory must not be a symlink")
-    resolved = path.resolve(strict=False)
-    forbidden_roots = (Path("/Library"), Path("/System"), Path("/private/var"))
-    if any(resolved == root or root in resolved.parents for root in forbidden_roots):
+    resolved = resolve_without_symlinks(path, "output directory")
+    # macOS volumes can resolve differently cased names to the same path.
+    folded = Path(str(resolved).casefold())
+    if any(folded == root or root in folded.parents for root in SYSTEM_ROOTS):
         fail("output directory must be outside macOS system locations")
-    if resolved == Path("/") or resolved == Path("/private"):
+    if folded in (Path("/"), Path("/private"), Path("/users")):
         fail("output directory is too broad")
-    if resolved.exists():
-        if not resolved.is_dir():
-            fail("output directory exists and is not a directory")
-        if any(resolved.iterdir()):
-            fail("output directory must be empty")
     return resolved
 
 
-def stage(helper: Path, output_directory: Path, plist_contents: bytes) -> None:
-    if helper.is_symlink() or not helper.is_file():
-        fail("helper input must be a regular, non-symlink file")
-    if helper.stat().st_size == 0:
-        fail("helper input is empty")
+def validate_staging_paths(helper: Path, output_directory: Path) -> tuple[Path, Path]:
+    source = validate_helper(helper)
     destination = validate_staging_directory(output_directory)
+    folded_source = Path(str(source).casefold())
+    folded_destination = Path(str(destination).casefold())
+    if (
+        folded_source == folded_destination
+        or folded_source in folded_destination.parents
+        or folded_destination in folded_source.parents
+    ):
+        fail("helper input and output directory must be disjoint")
+    if destination.exists():
+        if not destination.is_dir():
+            fail("output directory exists and is not a directory")
+        if any(destination.iterdir()):
+            fail("output directory must be empty")
+    return source, destination
+
+
+def stage(helper: Path, output_directory: Path, plist_contents: bytes) -> None:
+    source, destination = validate_staging_paths(helper, output_directory)
 
     helper_destination = destination / STAGED_HELPER
     plist_destination = destination / STAGED_PLIST
     helper_destination.parent.mkdir(parents=True)
     plist_destination.parent.mkdir(parents=True)
-    shutil.copyfile(helper, helper_destination, follow_symlinks=False)
+    shutil.copyfile(source, helper_destination, follow_symlinks=False)
     os.chmod(helper_destination, 0o755)
     plist_destination.write_bytes(plist_contents)
     os.chmod(plist_destination, 0o644)
@@ -100,6 +148,8 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     try:
         arguments = parse_args()
+        if not arguments.validate_only:
+            validate_staging_paths(arguments.helper, arguments.output_dir)
         plist_contents = load_and_validate_plist()
         if not arguments.validate_only:
             stage(arguments.helper, arguments.output_dir, plist_contents)

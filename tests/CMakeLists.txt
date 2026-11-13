@@ -106,6 +106,12 @@ if(Python3_Interpreter_FOUND)
                 --preview-tool "$<TARGET_FILE:mach_service_identity_preview>"
         )
         set_tests_properties(m6_codesign_smoke PROPERTIES TIMEOUT 60)
+
+        add_test(NAME m6_helper_package_codesign_smoke
+            COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/test_m6_helper_package_codesign_smoke.py"
+                --helper "$<TARGET_FILE:llm_interceptor_helper>"
+        )
+        set_tests_properties(m6_helper_package_codesign_smoke PROPERTIES TIMEOUT 60)
     endif()
 endif()
 

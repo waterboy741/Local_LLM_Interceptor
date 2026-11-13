@@ -17,6 +17,8 @@ The release and sanitizer presets use the same commands with their respective na
 
 On macOS with Python 3 available, `ctest --preset debug -R '^m6_codesign_smoke$'` checks signed GUI staging with the system `codesign` tool and the built identity preview CLI. It uses a temporary copy of the built app and runs offline without installing a helper or requiring administrator privileges.
 
+On macOS with Python 3 available, `ctest --preset debug -R '^m6_helper_package_codesign_smoke$'` stages the built helper with the launchd helper packaging script in a temporary directory. The test uses the system `codesign` tool to verify the staged copy’s embedded signature. It runs offline without installing the helper or requiring administrator privileges.
+
 GitHub Actions runs the debug, release, and sanitizer presets on a macOS runner for every push and pull request. The workflow installs Qt 6.11+ and Ninja, builds the application, and runs the same CTest suites; it performs no live network activation.
 
 ## Configuration and permissions

@@ -92,6 +92,12 @@ if(Python3_Interpreter_FOUND)
             -s "${CMAKE_CURRENT_SOURCE_DIR}" -p test_m6_launchd_artifact.py -v
     )
     set_tests_properties(m6_launchd_artifact PROPERTIES TIMEOUT 30)
+
+    add_test(NAME signed_gui_review_staging
+        COMMAND "${Python3_EXECUTABLE}" -B -m unittest discover
+            -s "${CMAKE_CURRENT_SOURCE_DIR}" -p test_stage_signed_gui_review.py -v
+    )
+    set_tests_properties(signed_gui_review_staging PROPERTIES TIMEOUT 60)
 endif()
 
 qt_add_executable(m5_inspection_tests M5InspectionTests.cpp)

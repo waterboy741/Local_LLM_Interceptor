@@ -1,30 +1,26 @@
-# M5 package and later lab validation
+# M5 package and M6 lab preparation
 
-The current build is an explicit HTTP proxy. The package below does not include a signed privileged helper or a working Network Extension, and it does not automatically redirect other devices or locally originated connections. Keep network-dependent verification in M6.
+The package is an unsigned explicit HTTP proxy, without a signed privileged helper, working Network Extension, or automatic redirection. Installed-helper status and remaining gates are in [the bootstrap contract](m6/INSTALLED_HELPER_BOOTSTRAP.md) and [live handoff](M6_LIVE_HANDOFF.md).
 
-## Reproducible local package
+## Reproducible package
 
-On the build Mac, install the dependencies in the README, including `macdeployqt`, then run:
+Install the README dependencies, including `macdeployqt`, then run:
 
 ```sh
 bash scripts/package_macos.sh
 ```
 
-The script configures and builds the release preset, requires the release tests to pass, copies the app bundle, deploys Qt frameworks into the copy, and writes `dist/llm_interceptor-macos.zip`. This is an unsigned local research artifact. It is not a notarized distribution and grants no capture, packet-injection, PF, or Network Extension privilege. Do not share a package with real request recordings or machine-specific settings.
+The script builds release, requires release tests to pass, copies the bundle, deploys Qt frameworks, and writes `dist/llm_interceptor-macos.zip`. It neither notarizes the app nor grants capture, injection, PF, or Network Extension privileges. Exclude real recordings and machine-specific settings.
 
-To inspect the artifact before using it, unpack it into a disposable directory and check the bundled executable and frameworks. Run it on the build Mac or a compatible test Mac using the explicit loopback listener; use a synthetic HTTP server and synthetic prompts. A live Ollama or Wi-Fi test belongs to M6.
+Unpack into a disposable directory, inspect the executable/frameworks, and test the loopback listener with a synthetic server on the build Mac or a compatible Mac. Live Ollama/Wi-Fi verification belongs to M6.
 
-## M6 opt-in lab runbook
+## Diagnostic tools
 
-Record the date, macOS version, app commit, client app/version, server version, interface, addresses, server port, API path, and applicable Wi-Fi policy. Use sanitized synthetic payloads first. Record observed outputs and any failure, without saving credentials or real prompts.
+All tools below are opt-in. They do not change routes, PF, ARP, forwarding, or interfaces; none elevates or retries with `sudo`. TCP preflight can create remote connection state/logs. Reports omit supplied network identities and raw output; keep actual configuration in controlled lab notes. Successful diagnostics are point-in-time observations, not proof of packet egress, shared layer 2, ARP compatibility, active PF evaluation, reverse translation, or interception.
 
-### Read-only endpoint preflight (M6 preparation only)
+### Endpoint preflight
 
-The optional `lab_preflight` executable checks the supplied configuration, whether the selected interface is present/up and has a usable IPv4 address and unicast MAC, and whether the configured client and server addresses are host addresses in one of that interface's IPv4 subnets. It binds the bounded TCP probe to that selected local IPv4 address; the operating system can still route the connection over another interface. A shared prefix is only an address-plan observation: it does not prove shared layer 2, peer MAC resolution, ARP compatibility, or packet egress on the named interface. The probe initiates a TCP handshake and can create connection state or a log at the remote endpoint, although it sends no application request. A PASS means the reported interface facts were internally consistent and source-address-bound TCP reached the configured server at that moment. It does not verify the peer's path through the named interface, Wi-Fi policy, PF evaluation, interception, reverse translation, Ollama behavior, or live redirection. The JSON omits the actual IPs, MAC, prefix, and selected source address, and explicitly leaves layer-2/ARP and proxy readiness unproven. It does not change routes, PF, ARP, forwarding, interface, or other local network settings.
-
-On October 19, 2026, the user-authorized lab endpoint preflight succeeded, a single ICMP echo to the client succeeded, local neighbor entries were present for the client and server, and the Ollama version endpoint returned HTTP 200 (version 0.40.4). A synthetic request to `/v1/chat/completions` returned HTTP 200 with one completion. This confirms endpoint reachability from the research host and the specific responses observed at that time. It does not prove the TCP flow left via the selected interface, shared Wi-Fi/L2 behavior, ARP compatibility, or redirection. Sanitized observations are in the lab record; raw address-bearing output remains in ignored local build evidence files.
-
-Build the debug target, then invoke it only when the lab and its authorized endpoint are available. Supply the actual values explicitly; there are no inferred defaults for interface, client/server addresses, or port:
+`lab_preflight` validates configuration, an up selected interface with usable IPv4/unicast MAC, and client/server host addresses in one of its IPv4 subnets. Its bounded server TCP probe binds the selected local IPv4; the OS may still route over another interface. A shared prefix does not establish shared layer 2.
 
 ```sh
 ./build/debug/lab_preflight \
@@ -36,13 +32,13 @@ Build the debug target, then invoke it only when the lab and its authorized endp
   --evidence preflight.json
 ```
 
-The process prints the same JSON it optionally writes with `--evidence`; exit status 0 means the checks completed and TCP connected, 1 means a check failed, and 2 means arguments or evidence-file writing failed. The schema records UTC time, configured-field presence, check outcomes, timeout, and a stable status code. It omits the supplied interface name, addresses, MACs, credentials, packet contents, and prompts. Keep the actual configuration in the lab's separately controlled evidence notes. TCP outcomes are `reachable`, `refused`, `timed_out`, `error`, or `not_checked`; timeout accepts 1–5000 ms and defaults to 1500 ms.
+Interface, peer addresses, and port have no inferred defaults. Timeout is 1–5000 ms (default 1500). TCP outcomes are `reachable`, `refused`, `timed_out`, `error`, or `not_checked`. JSON includes UTC time, configured-field presence, outcomes, timeout, and status, omitting interface name, addresses, MACs, prefix/source address, credentials, and payloads. Stdout and optional `--evidence` contain the same report. Exit codes: 0 checks/TCP succeeded; 1 check failed; 2 arguments or evidence writing failed. Layer-2/ARP and proxy readiness remain unproven.
 
-### Explicitly enabled route and neighbor inspection
+October 19, 2026 evidence: preflight, one client ICMP echo, and both local neighbor entries succeeded; Ollama `/api/version` returned HTTP 200/version 0.40.4, and a synthetic `/v1/chat/completions` returned one completion. This established those endpoint observations only. Raw address-bearing output stays in ignored build evidence files; see [PLAN.md](../PLAN.md) for subsequent observations.
 
-`--route-neighbor-diagnostics` runs four fixed read-only queries: the OS route to each configured peer, then the selected-interface ARP cache lookup for each peer. On macOS these use `/sbin/route -n get <address>` and `/usr/sbin/arp -i <interface> -n <address>` as separate processes, with no shell, elevation, route changes, or ARP sends. Each query has a 1–5000 ms timeout (default 1500 ms) and a 32 KiB combined output limit. The JSON reports only whether output was recognized, whether the route/neighbor interface matches the selected interface, whether the route explicitly reports a direct `link#` gateway, and whether the neighbor row contains a valid unicast MAC. A route output without a gateway is recognized with directness unknown. It omits addresses, gateways, MACs, and raw command output. An `(incomplete)` ARP row or recognized `no entry` result is an unresolved neighbor. Cache entries can be stale; these queries do not refresh them. A completed report may still show interface mismatch, a routed path, or unresolved peers; `complete` means all four command observations were collected and recognized, not that connectivity succeeded.
+### Route and neighbor inspection
 
-These are snapshots of the OS route table and neighbor cache. They do not prove that packets egressed on the selected interface, that client and server share layer 2, that Wi-Fi accepts ARP redirection, or that PF/interception works. The mode does not trigger resolution or send test traffic. Example:
+`--route-neighbor-diagnostics` runs four read-only processes without a shell: `/sbin/route -n get <address>` for each peer, then `/usr/sbin/arp -i <interface> -n <address>` for each peer. Per-query timeout is 1–5000 ms (default 1500), with 32 KiB combined output.
 
 ```sh
 ./build/debug/lab_preflight \
@@ -55,13 +51,11 @@ These are snapshots of the OS route table and neighbor cache. They do not prove 
   --evidence route-neighbors.json
 ```
 
-### Explicitly enabled PF diagnostics (M6 preparation only)
+JSON reports recognized output, route/neighbor interface matches, explicit direct `link#` gateway, and resolved unicast neighbor MAC presence. Missing gateway means directness unknown; `(incomplete)` or `no entry` means unresolved. `complete` means all four observations were recognized, not that connectivity succeeded. Queries neither send resolution traffic nor refresh potentially stale cache entries.
 
-`lab_preflight --pf-diagnostics` is a separate opt-in read-only inspection mode. It requires the same explicit interface/client/server/port values plus `--session-id`, and issues only fixed, allowlisted `/sbin/pfctl` show queries: PF status, main filter and translation rules, the application/session anchor tree, rules and counters scoped to that session anchor, and the state table. It never loads or flushes rules, enables PF, releases a PF reference, changes ARP, or invokes `sudo`. PF inspection may require administrator privileges; a permission failure is recorded as unavailable, with no retry or elevation attempt.
+### PF inspection
 
-The local macOS `pfctl(8)` man page states that `-a` scopes ruleset operations, while `-s states` shows the state table; it does not promise that state output is anchor-scoped. The command therefore limits bytes drained from each query to 256 KiB plus an overflow sentinel, filters that bounded global state output in memory by the configured client/server IP and server port, discards raw output, and reports only a matching candidate count. Qt may buffer more internally between drain events, so this is a drained-byte cap rather than a hard process-memory bound. It labels those rows as global candidates and never attributes them to the selected anchor. The output also separates main-ruleset anchor references from loaded session-anchor/rule evidence. Visible attachment references or nonzero counters do not prove a fresh packet evaluated or matched the anchor; `evaluation_proven` remains false. Output caps, timeouts, permission errors, or unrecognized output make the result incomplete. This mode does not establish active redirection, reverse translation, ARP delivery, or live support.
-
-Run the full inspection after a corresponding M4 session anchor exists and the user has explicitly chosen to inspect PF. A preliminary invocation may establish whether the host grants read access, but cannot validate a nonexistent anchor:
+`lab_preflight --pf-diagnostics` requires the same tuple plus `--session-id`. Fixed allowlisted show queries inspect PF status, main filter/translation rules, the application/session anchor tree, scoped rules/counters, and the state table. Permission failures are unavailable results, without escalation.
 
 ```sh
 ./build/debug/lab_preflight \
@@ -75,47 +69,41 @@ Run the full inspection after a corresponding M4 session anchor exists and the u
   --evidence pf-diagnostics.json
 ```
 
-The JSON omits the configured interface name, addresses, session identifier, PF rule text, and raw states. Store actual lab configuration in separately controlled evidence notes. A completed diagnostic means all queries were read and parsed; it does not mean the configured references were found or traffic was intercepted. A preliminary lab invocation returned `permission_denied` on the first query; no rules or states were read. The command does not elevate or retry.
+State output is global: `pfctl(8)` does not promise anchor-scoped `-s states`. Each query drains at most 256 KiB plus an overflow sentinel; Qt may buffer more internally, so this is not a hard memory bound. The tool filters states in memory by client/server IP and server port, discards raw output, and reports only global candidate counts, never anchor ownership.
 
-### PF pre-install readiness check (M6 preparation only)
+Main attachment references and loaded session rules are separate evidence. Counters do not prove a fresh packet matched; `evaluation_proven` stays false. Caps, timeouts, permissions, or unrecognized output make the result incomplete. A complete report does not imply references were found. JSON also omits session ID, rule text, and raw states. Run against an existing session anchor for meaningful inspection; the preliminary lab run returned `permission_denied` at its first query and read no rules/states.
 
-`pf_readiness` performs a narrower read-only check before installing any application anchor. It queries only PF status and the main filter/translation rule listings, then reports whether PF is enabled and whether the main ruleset text references `llm_interceptor/*` for both rule types. It never loads rules, enables PF, or changes network configuration. The optional `--timeout-ms` value applies separately to each query and is bounded to 1–5000 ms; malformed or duplicate options exit before any query. On non-macOS systems the executable reports `unsupported_platform` without attempting a PF command.
+### PF readiness and attachment candidates
 
-The JSON deliberately reports `references_observed_only: true` and `packet_evaluation_proven: false`. A ready result confirms only those pre-install observations. It does not verify an installed session anchor, rule counters, active PF evaluation, forwarding, proxy listener reachability, or the configured upstream path. The command does not elevate; if PF requires administrator privileges, run it explicitly with the required privilege after reviewing the command's read-only scope.
+`pf_readiness` queries only status and main filter/translation listings, requiring enabled PF and both `llm_interceptor/*` references. Its per-query timeout is 1–5000 ms; malformed/duplicate options fail before queries. Non-macOS returns `unsupported_platform` without a command. Output explicitly sets `references_observed_only: true` and `packet_evaluation_proven: false`; readiness does not establish a session anchor, counters, listener/upstream reachability, or forwarding. The recorded host baseline was disabled, including the recognized `Debug: Urgent` suffix; reobserve before use.
 
-The current user-reported PF status was disabled (`Status: Disabled`, with the recognized `Debug: Urgent` suffix), so the readiness result should remain false until PF is enabled through the host's own administration. The application does not enable PF.
+```sh
+./build/debug/pf_readiness --timeout-ms 3000
+```
 
-### PF attachment fragment preparation (M6 preparation only)
-
-`pf_attachment_prepare` emits the exact fragment in [`docs/m6/llm_interceptor_attachment.pf`](m6/llm_interceptor_attachment.pf) only after a local syntax-only check succeeds. It runs the fixed command `/sbin/pfctl -n -f -` with that fragment on standard input; it does not enable PF, load rules, touch `/etc/pf.conf`, flush state, or write files. Standard output contains only the validated fragment so it can be redirected to an operator review file. Standard error contains sanitized status JSON. On non-macOS systems it reports `unsupported_platform` without attempting a PF command.
+`pf_attachment_prepare` emits [the attachment fragment](m6/llm_interceptor_attachment.pf) only after `/sbin/pfctl -n -f -` accepts it. Stdout contains the fragment; stderr contains sanitized status. Non-macOS returns `unsupported_platform`. It writes no files itself.
 
 ```sh
 ./build/debug/pf_attachment_prepare > "$TMPDIR/llm_interceptor_attachment.pf"
 cat "$TMPDIR/llm_interceptor_attachment.pf"
 ```
 
-The two references are deliberately ordered with translation first for PF syntax. When an administrator reviews a future system configuration change, place the `rdr-anchor` directive in the translation section and the `anchor` directive in the filter section, before that section's rules; do not append both after the existing filter section. Preserve every existing rule and all `com.apple/*` anchors. The fragment is an insertion-point proposal, not an active attachment or complete `pf.conf`; isolated syntax success does not prove effective placement, runtime evaluation, listener delivery, or a working proxy path. Current reported PF status is disabled, and this tool does not enable it.
+Place `rdr-anchor` in the translation section and `anchor` in the filter section, before each section's rules; do not append both after filtering. Preserve all existing rules and `com.apple/*` references. This is an insertion proposal, not a complete or active configuration.
 
-### Merge supplied PF configuration for review
-
-`pf_attachment_merge` reads supplied `pf.conf` text from standard input, bounded to 1 MiB. It requires exactly one active stock `rdr-anchor "com.apple/*"` translation marker followed by exactly one active stock `anchor "com.apple/*"` filter marker. It inserts `rdr-anchor "llm_interceptor/*"` before the translation marker and `anchor "llm_interceptor/*"` before the filter marker. It fails closed for missing or duplicate markers, reversed marker order, mixed line endings, active line continuations, or any active `llm_interceptor` namespace text. Comment-only mentions are ignored; comments, quoted `#` characters, line endings, and every other original byte are preserved.
-
-The command runs only `/sbin/pfctl -n -f -` on the merged candidate. It emits the full candidate to stdout only after syntax succeeds; stderr contains sanitized status and never echoes the supplied configuration or PF diagnostics. It does not load rules, enable PF, write a file, or edit `/etc/pf.conf`. Redirect successful stdout to a new local review file and inspect the full diff before any separately authorized administrator action:
+`pf_attachment_merge` accepts at most 1 MiB of supplied configuration on stdin. It requires exactly one active stock `rdr-anchor "com.apple/*"` marker followed by one active stock `anchor "com.apple/*"` marker, inserting the corresponding `llm_interceptor/*` reference before each. It rejects missing/duplicate/reversed markers, mixed line endings, active continuations, or active `llm_interceptor` namespace text. Comment-only mentions are ignored; quoted `#`, comments, line endings, and all other bytes are preserved.
 
 ```sh
 ./build/debug/pf_attachment_merge < /etc/pf.conf > "$TMPDIR/pf.conf.llm-interceptor-review"
 ```
 
-The merge preserves existing `com.apple/*` references and unrelated rules byte for byte. Syntax success applies only to the supplied snapshot; it does not prove effective placement, runtime PF evaluation, packet delivery, reverse translation, or proxy readiness. The currently reported host PF status remains disabled.
+The merger emits the full candidate only after `/sbin/pfctl -n -f -` succeeds; stderr status omits supplied text and PF diagnostics. Neither preparation tool loads rules, enables PF, edits `/etc/pf.conf`, or flushes state. Review the full diff before any separately authorized change. Syntax acceptance applies only to the supplied snapshot and proves neither effective placement nor packet behavior.
 
-```sh
-./build/debug/pf_readiness --timeout-ms 3000
-```
+## Package/lab checklist
 
-1. Verify direct client-to-mock-server connectivity and the configured path and port. Confirm that the server listens on the chosen LAN address and that the research Mac can reach it.
-2. Exercise the packaged explicit proxy on loopback. Start Observe, point only the test client at the displayed listener, send a JSON request, and verify one upstream delivery and an intact response. Test a streaming response and a nonmatching path. Stop, then verify the listener has closed.
-3. Exercise Modify with a synthetic chat request. Verify a shorter and a longer edited body arrive exactly once and that the response reaches the client. Verify Hold timeout and cancellation during stop.
-4. Record bounded-history, export/import, and replay behavior with synthetic records. Confirm replay does not open a server connection and exported files contain no test credentials.
-5. Only if a separately completed and reviewed redirection implementation exists, verify peer topology and opt-in live routing using the gates in [M0_LAB.md](M0_LAB.md). Confirm MAC/IP delivery, rule attachment, reverse translation, bypass traffic, cleanup, and network recovery. An unsigned M5 package alone cannot pass these gates.
+Record date, OS, commit, client/server versions, interface/addresses, port/API path, Wi-Fi policy, PASS/FAIL, and sanitized observations. Use synthetic payloads; exclude credentials and real prompts.
 
-Keep evidence as a checklist with PASS/FAIL, setup, timestamp, and sanitized observations. A successful offline build or loopback proxy test does not establish live Wi-Fi interception.
+1. Verify direct client-to-mock connectivity, configured path/port, server LAN bind, and research-Mac reachability.
+2. Test packaged loopback Observe: one upstream delivery, intact response, incremental stream, nonmatching path, and closed listener after Stop.
+3. Test Modify: shorter/longer synthetic bodies arrive exactly once; response, hold timeout, and stop cancellation work.
+4. Verify bounded history, sanitized archive roundtrip, and replay without server connections or exported test credentials.
+5. Only after reviewed redirection implementation, exercise the [M0 live gates](M0_LAB.md): topology, MAC/IP delivery, attachment/evaluation, reverse translation, bypass, cleanup, and recovery. An unsigned package or loopback success does not pass these gates.

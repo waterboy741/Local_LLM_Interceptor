@@ -41,6 +41,14 @@ target_link_libraries(m6_pf_session_preview_cli_tests PRIVATE interceptor_networ
 add_test(NAME m6_pf_session_preview_cli COMMAND m6_pf_session_preview_cli_tests)
 set_tests_properties(m6_pf_session_preview_cli PROPERTIES TIMEOUT 30)
 
+qt_add_executable(m6_mach_service_identity_preview_cli_tests
+    M6MachServiceIdentityPreviewCliTests.cpp)
+target_link_libraries(m6_mach_service_identity_preview_cli_tests PRIVATE
+    interceptor_network Qt6::Test)
+add_test(NAME m6_mach_service_identity_preview_cli
+    COMMAND m6_mach_service_identity_preview_cli_tests)
+set_tests_properties(m6_mach_service_identity_preview_cli PROPERTIES TIMEOUT 30)
+
 qt_add_executable(m6_transparent_proxy_probe_tests M6TransparentProxyProbeTests.cpp)
 target_link_libraries(m6_transparent_proxy_probe_tests PRIVATE interceptor_proxy Qt6::Test)
 add_test(NAME m6_transparent_proxy_probe COMMAND m6_transparent_proxy_probe_tests)

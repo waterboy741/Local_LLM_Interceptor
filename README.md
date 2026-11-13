@@ -15,6 +15,8 @@ ctest --preset debug --output-on-failure
 
 The release and sanitizer presets use the same commands with their respective names. Sanitizer configuration checks compiler/linker support for AddressSanitizer and UndefinedBehaviorSanitizer. Tests run offscreen without capture privileges. M0 synthetic fixture checks can also run with `python3 -m unittest discover -s tests -p 'test_m0_fixtures.py' -v`.
 
+On macOS with Python 3 available, `ctest --preset debug -R '^m6_codesign_smoke$'` checks signed GUI staging with the system `codesign` tool and the built identity preview CLI. It uses a temporary copy of the built app and runs offline without installing a helper or requiring administrator privileges.
+
 GitHub Actions runs the debug, release, and sanitizer presets on a macOS runner for every push and pull request. The workflow installs Qt 6.11+ and Ninja, builds the application, and runs the same CTest suites; it performs no live network activation.
 
 ## Configuration and permissions

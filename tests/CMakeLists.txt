@@ -98,6 +98,15 @@ if(Python3_Interpreter_FOUND)
             -s "${CMAKE_CURRENT_SOURCE_DIR}" -p test_stage_signed_gui_review.py -v
     )
     set_tests_properties(signed_gui_review_staging PROPERTIES TIMEOUT 60)
+
+    if(APPLE)
+        add_test(NAME m6_codesign_smoke
+            COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/test_m6_codesign_smoke.py"
+                --app "$<TARGET_BUNDLE_DIR:llm_interceptor>"
+                --preview-tool "$<TARGET_FILE:mach_service_identity_preview>"
+        )
+        set_tests_properties(m6_codesign_smoke PROPERTIES TIMEOUT 60)
+    endif()
 endif()
 
 qt_add_executable(m5_inspection_tests M5InspectionTests.cpp)

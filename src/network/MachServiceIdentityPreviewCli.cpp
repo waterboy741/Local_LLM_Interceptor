@@ -120,10 +120,10 @@ QString cdhashRequirement(const QByteArray &output, const QString &expectedExecu
     if (text.toUtf8() != output)
         return {};
 
-    // `codesign -d -r-` can include the executable path, but every other line is rejected.
-    // In particular, only a single literal cdhash designated requirement is accepted.
+    // `codesign -d -r-` prints the requirement as a comment after the executable line.
+    // Reject other metadata and only accept one literal cdhash designated requirement.
     static const QRegularExpression requirementPattern(
-        QStringLiteral("^designated => cdhash H\\\"([0-9a-fA-F]{40}|[0-9a-fA-F]{64})\\\"$"));
+        QStringLiteral("^# designated => cdhash H\\\"([0-9a-fA-F]{40}|[0-9a-fA-F]{64})\\\"$"));
     static const QRegularExpression executablePattern(QStringLiteral("^Executable=(/.+)$"));
     QString requirement;
     bool executableSeen = false;
@@ -135,13 +135,13 @@ QString cdhashRequirement(const QByteArray &output, const QString &expectedExecu
             continue;
         const auto match = requirementPattern.match(line);
         if (match.hasMatch()) {
-            if (!requirement.isEmpty())
+            if (!executableSeen || !requirement.isEmpty())
                 return {};
             requirement =
                 QStringLiteral("cdhash H\"") + match.captured(1).toLower() + QStringLiteral("\"");
         } else {
             const auto executableMatch = executablePattern.match(line);
-            if (!executableMatch.hasMatch() || executableSeen ||
+            if (!executableMatch.hasMatch() || executableSeen || !requirement.isEmpty() ||
                 executableMatch.captured(1) != expectedExecutable)
                 return {};
             executableSeen = true;
@@ -198,11 +198,13 @@ CodesignCommandResult runWithRunner(const QStringList &arguments, CodesignComman
     if (!sameExecutableStamp(appPath, before))
         return failure(1, QStringLiteral("app_executable_changed_during_preview"));
 
-    QByteArray combined = display.standardOutput;
-    if (!display.standardError.isEmpty()) {
+    // `codesign -d -r-` writes its Executable= line to stderr and the
+    // designated-requirement comment to stdout. Keep that order for validation.
+    QByteArray combined = display.standardError;
+    if (!display.standardOutput.isEmpty()) {
         if (!combined.isEmpty())
             combined += '\n';
-        combined += display.standardError;
+        combined += display.standardOutput;
     }
     const QString expectedExecutable = appPath + QStringLiteral("/Contents/MacOS/llm_interceptor");
     const QString requirement = cdhashRequirement(combined, expectedExecutable);

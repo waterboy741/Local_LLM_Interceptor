@@ -12,13 +12,6 @@ namespace {
 const QStringList validArguments{QStringLiteral("mach_service_identity_preview"),
                                  QStringLiteral("--app"), QString()};
 
-QByteArray validRequirement(const QString &appPath) {
-    return QStringLiteral("Executable=%1/Contents/MacOS/llm_interceptor\n"
-                          "designated => cdhash H\"0123456789abcdef0123456789abcdef01234567\"\n")
-        .arg(appPath)
-        .toUtf8();
-}
-
 class FakeCodesignRunner final : public CodesignCommandRunner {
   public:
     QVector<CodesignCommandResult> preparedResults;
@@ -90,8 +83,12 @@ class M6MachServiceIdentityPreviewCliTests final : public QObject {
         IdentityPreviewFixture fixture;
         QVERIFY(fixture.temporaryDirectory.isValid());
         FakeCodesignRunner runner;
-        runner.preparedResults = {success(),
-                                  success({}, validRequirement(fixture.canonicalAppPath))};
+        const QByteArray executableLine = QByteArrayLiteral("Executable=") +
+                                          fixture.canonicalAppPath.toUtf8() +
+                                          QByteArrayLiteral("/Contents/MacOS/llm_interceptor\n");
+        const QByteArray designatedLine = QByteArrayLiteral(
+            "# designated => cdhash H\"0123456789abcdef0123456789abcdef01234567\"\n");
+        runner.preparedResults = {success(), success(designatedLine, executableLine)};
 
         const auto result = MachServiceIdentityPreviewCli::run(fixture.arguments(), runner);
 
@@ -126,14 +123,14 @@ class M6MachServiceIdentityPreviewCliTests final : public QObject {
 
         const QList<QByteArray> rejectedOutputs = {
             {},
-            QByteArrayLiteral("designated => cdhash H\"not-a-hash\"\n"),
-            QByteArrayLiteral("designated => identifier \"com.example.llm\"\n"),
-            QByteArrayLiteral("designated => anchor apple generic and identifier \"x\"\n"),
+            QByteArrayLiteral("# designated => cdhash H\"not-a-hash\"\n"),
+            QByteArrayLiteral("# designated => identifier \"com.example.llm\"\n"),
+            QByteArrayLiteral("# designated => anchor apple generic and identifier \"x\"\n"),
             QByteArrayLiteral(
-                "designated => cdhash H\"0123456789abcdef0123456789abcdef01234567\"\n"
-                "designated => cdhash H\"1123456789abcdef0123456789abcdef01234567\"\n"),
+                "# designated => cdhash H\"0123456789abcdef0123456789abcdef01234567\"\n"
+                "# designated => cdhash H\"1123456789abcdef0123456789abcdef01234567\"\n"),
             QByteArrayLiteral(
-                "designated => cdhash H\"0123456789abcdef0123456789abcdef01234567\"\0\n")};
+                "# designated => cdhash H\"0123456789abcdef0123456789abcdef01234567\"\0\n")};
 
         for (const QByteArray &output : rejectedOutputs) {
             IdentityPreviewFixture fixture;
@@ -143,6 +140,31 @@ class M6MachServiceIdentityPreviewCliTests final : public QObject {
             QVERIFY(result.exitCode != 0);
             QVERIFY(result.standardOutput.isEmpty());
             QCOMPARE(runner.calls.size(), 2);
+        }
+    }
+
+    void actualCodesignFormatRequiresCommentAndExecutableFirst() {
+        if (!identityPreviewIsSupported())
+            QSKIP("codesign identity preview is macOS-only");
+
+        IdentityPreviewFixture fixture;
+        const QByteArray executableLine = QByteArrayLiteral("Executable=") +
+                                          fixture.canonicalAppPath.toUtf8() +
+                                          QByteArrayLiteral("/Contents/MacOS/llm_interceptor\n");
+        const QByteArray designatedLine = QByteArrayLiteral(
+            "# designated => cdhash H\"0123456789abcdef0123456789abcdef01234567\"\n");
+        const QList<QByteArray> rejectedOutputs = {
+            executableLine +
+                QByteArrayLiteral(
+                    "designated => cdhash H\"0123456789abcdef0123456789abcdef01234567\"\n"),
+            designatedLine + executableLine};
+
+        for (const QByteArray &output : rejectedOutputs) {
+            FakeCodesignRunner runner;
+            runner.preparedResults = {success(), success({}, output)};
+            const auto result = MachServiceIdentityPreviewCli::run(fixture.arguments(), runner);
+            QVERIFY(result.exitCode != 0);
+            QVERIFY(result.standardOutput.isEmpty());
         }
     }
 
@@ -160,7 +182,7 @@ class M6MachServiceIdentityPreviewCliTests final : public QObject {
 
         const QByteArray wrongExecutablePath = QByteArrayLiteral(
             "Executable=/tmp/attacker.app/Contents/MacOS/llm_interceptor\n"
-            "designated => cdhash H\"0123456789abcdef0123456789abcdef01234567\"\n");
+            "# designated => cdhash H\"0123456789abcdef0123456789abcdef01234567\"\n");
         runner.preparedResults = {success(), success({}, wrongExecutablePath)};
         const auto wrongIdentity = MachServiceIdentityPreviewCli::run(fixture.arguments(), runner);
         QVERIFY(wrongIdentity.exitCode != 0);
@@ -199,10 +221,10 @@ class M6MachServiceIdentityPreviewCliTests final : public QObject {
         const QList<QByteArray> outputs = {
             QByteArrayLiteral(
                 "Identifier=com.example.impostor\n"
-                "designated => cdhash H\"0123456789abcdef0123456789abcdef01234567\"\n"),
+                "# designated => cdhash H\"0123456789abcdef0123456789abcdef01234567\"\n"),
             QByteArrayLiteral(
-                "designated => cdhash H\"0123456789abcdef0123456789abcdef01234567\"\n"
-                "designated => cdhash H\"0123456789abcdef0123456789abcdef01234567\"\n")};
+                "# designated => cdhash H\"0123456789abcdef0123456789abcdef01234567\"\n"
+                "# designated => cdhash H\"0123456789abcdef0123456789abcdef01234567\"\n")};
         for (const auto &output : outputs) {
             FakeCodesignRunner runner;
             runner.preparedResults = {success(), success({}, output)};
@@ -221,7 +243,7 @@ class M6MachServiceIdentityPreviewCliTests final : public QObject {
                 {},
                 executableLine + executableLine +
                     QByteArrayLiteral(
-                        "designated => cdhash H\"0123456789abcdef0123456789abcdef01234567\"\n"))};
+                        "# designated => cdhash H\"0123456789abcdef0123456789abcdef01234567\"\n"))};
         const auto duplicateResult =
             MachServiceIdentityPreviewCli::run(fixture.arguments(), duplicateExecutable);
         QVERIFY(duplicateResult.exitCode != 0);

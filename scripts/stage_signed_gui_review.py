@@ -23,8 +23,8 @@ MAX_COMMAND_OUTPUT_BYTES = 16 * 1024
 SYSTEM_ROOTS = tuple(
     Path(path)
     for path in (
-        "/System", "/Library", "/Applications", "/usr", "/bin", "/sbin", "/etc",
-        "/private/var", "/private/etc",
+        "/system", "/library", "/applications", "/usr", "/bin", "/sbin", "/etc",
+        "/private/var", "/private/etc", "/var",
     )
 )
 
@@ -50,6 +50,8 @@ def has_symlink_component(path: Path) -> bool:
 def validate_app(app: Path) -> Path:
     if not app.is_absolute():
         fail("app path must be absolute")
+    if ".." in app.parts:
+        fail("app path must not contain parent traversal")
     if has_symlink_component(app):
         fail("app path must not contain symlinked components")
     try:
@@ -75,11 +77,15 @@ def validate_app(app: Path) -> Path:
 def validate_output_directory(path: Path) -> Path:
     if not path.is_absolute():
         fail("output directory must be an absolute path")
+    if ".." in path.parts:
+        fail("output directory path must not contain parent traversal")
     if has_symlink_component(path):
         fail("output directory path must not contain symlinked components")
     destination = path.resolve(strict=False)
-    if destination in (Path("/"), Path("/private"), Path("/Users")) or any(
-        destination == root or root in destination.parents for root in SYSTEM_ROOTS
+    # macOS volumes can resolve differently cased names to the same path.
+    folded = Path(str(destination).casefold())
+    if folded in (Path("/"), Path("/private"), Path("/users")) or any(
+        folded == root or root in folded.parents for root in SYSTEM_ROOTS
     ):
         fail("output directory must be outside macOS system locations")
     if destination.exists():
@@ -94,11 +100,14 @@ def validate_output_directory(path: Path) -> Path:
 
 
 def disjoint(source: Path, destination: Path) -> None:
-    staged_app = destination / APP_NAME
-    if source == destination or source in destination.parents or destination in source.parents:
+    folded_source = Path(str(source).casefold())
+    folded_destination = Path(str(destination).casefold())
+    if (
+        folded_source == folded_destination
+        or folded_source in folded_destination.parents
+        or folded_destination in folded_source.parents
+    ):
         fail("source app and output directory must be disjoint")
-    if source == staged_app or source in staged_app.parents or staged_app in source.parents:
-        fail("staged app and source app must be disjoint")
 
 
 def run_tool(program: Path, arguments: Sequence[str], label: str) -> subprocess.CompletedProcess[bytes]:

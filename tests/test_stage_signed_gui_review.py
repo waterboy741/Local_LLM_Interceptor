@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import runpy
 import subprocess
 import sys
 import tempfile
@@ -173,6 +174,69 @@ class SignedGuiReviewStagingTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(self.tool_calls(), [])
         self.assertEqual(outside.read_bytes(), b"outside\n")
+
+    def test_rejects_parent_traversal_before_staging(self) -> None:
+        regular_file = self.root / "regular-file"
+        regular_file.write_bytes(b"keep\n")
+        missing_parent = self.root / "missing-parent"
+        output = self.root / "review-output"
+
+        for parent in (regular_file, missing_parent):
+            for app_path, output_path in (
+                (parent / ".." / self.source.relative_to(self.root), output),
+                (self.source, parent / ".." / output.name),
+            ):
+                with self.subTest(app=app_path, output=output_path):
+                    result = self.invoke(output_path, app=app_path)
+                    self.assertEqual(result.returncode, 1)
+                    self.assertEqual(result.stdout, b"")
+                    self.assertIn(b"signed_gui_stage_error:", result.stderr)
+                    self.assertEqual(self.tool_calls(), [])
+                    self.assertFalse(output.exists())
+                    self.assertFalse(missing_parent.exists())
+                    self.assertEqual(regular_file.read_bytes(), b"keep\n")
+
+    def test_rejects_case_varied_protected_output_root(self) -> None:
+        validate_output_directory = runpy.run_path(str(SCRIPT_PATH))["validate_output_directory"]
+
+        # Validate directly so a regression cannot write under a system location.
+        with self.assertRaisesRegex(ValueError, "outside macOS system locations"):
+            validate_output_directory(Path("/private/Etc/stage-review"))
+
+    def test_rejects_case_varied_source_output_overlap(self) -> None:
+        output = self.source.with_name(self.source.name.upper()) / "review-output"
+        result = self.invoke(output)
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(b"disjoint", result.stderr)
+        self.assertEqual(self.tool_calls(), [])
+        self.assertFalse(output.exists())
+        self.assertFalse((self.source / output.name).exists())
+
+    def test_rejects_symlinked_source_and_output_ancestors(self) -> None:
+        alias = self.root / "alias"
+        alias.symlink_to(self.root, target_is_directory=True)
+        output = self.root / "review-output"
+
+        for app_path, output_path in (
+            (alias / self.source.relative_to(self.root), output),
+            (self.source, alias / output.name),
+        ):
+            with self.subTest(app=app_path, output=output_path):
+                result = self.invoke(output_path, app=app_path)
+                self.assertEqual(result.returncode, 1)
+                self.assertIn(b"symlinked components", result.stderr)
+                self.assertEqual(self.tool_calls(), [])
+                self.assertFalse(output.exists())
+
+    @unittest.skipUnless(Path("/private/tmp").is_dir(), "requires macOS private temporary directory")
+    def test_stages_under_private_tmp(self) -> None:
+        with tempfile.TemporaryDirectory(dir="/private/tmp") as temporary:
+            output = Path(temporary) / "review-output"
+            result = self.invoke(output)
+
+            self.assertEqual(result.returncode, 0, result.stderr.decode(errors="replace"))
+            self.assertTrue((output / self.source.name).is_dir())
 
     def test_each_tool_failure_stops_before_later_tools(self) -> None:
         expected = {

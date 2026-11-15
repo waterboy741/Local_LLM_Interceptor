@@ -16,6 +16,8 @@ Complete A and B before joining any live network operation to a persistent proce
 
 ## A. Trusted GUI/helper boundary
 
+Start with the [read-only trust-boundary slice](GUI_HELPER_TRUST_BOUNDARY.md). It records the current endpoints, the helper-identity gap, the signing decisions, and the offline acceptance checks before any control protocol expansion.
+
 **Present:** `src/installed_helper_main.cpp` has a root-gated, read-only Mach service. `--process` deliberately exits with `production_peer_authenticator_unavailable`. `src/network/MachServiceIdentityPreviewCli.cpp` verifies the selected app's exact code requirement, including a self-match check. `resources/launchd/` and `scripts/package_launchd_helper.py` stage review artifacts but do not install them.
 
 **Next decisions and implementation:**

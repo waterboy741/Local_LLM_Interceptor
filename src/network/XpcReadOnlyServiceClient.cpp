@@ -82,33 +82,63 @@ XpcReadOnlyClientResult XpcReadOnlyServiceClient::status(int timeoutMs) const {
     return request(XpcReadOnlyClientOperation::Status, timeoutMs, nullptr);
 }
 
+XpcReadOnlyClientResult XpcReadOnlyServiceClient::trustedStatus(const QByteArray &helperRequirement,
+                                                                int timeoutMs) const {
+    return request(XpcReadOnlyClientOperation::Status, timeoutMs, nullptr, &helperRequirement);
+}
+
 XpcReadOnlyClientResult XpcReadOnlyServiceClient::requestWithEndpointForTesting(
     xpc_endpoint_t endpoint, XpcReadOnlyClientOperation operation, int timeoutMs) {
     return request(operation, timeoutMs, endpoint);
 }
 
+XpcReadOnlyClientResult XpcReadOnlyServiceClient::trustedStatusWithEndpointForTesting(
+    xpc_endpoint_t endpoint, const QByteArray &helperRequirement, int timeoutMs) {
+    return request(XpcReadOnlyClientOperation::Status, timeoutMs, endpoint, &helperRequirement);
+}
+
 XpcReadOnlyClientResult XpcReadOnlyServiceClient::request(XpcReadOnlyClientOperation operation,
                                                           int timeoutMs,
-                                                          xpc_endpoint_t testEndpoint) {
+                                                          xpc_endpoint_t testEndpoint,
+                                                          const QByteArray *helperRequirement) {
     if (timeoutMs < 1 || timeoutMs > maximumTimeoutMs)
         return failed(XpcReadOnlyClientStatus::InvalidTimeout);
     if (operation != XpcReadOnlyClientOperation::Probe &&
         operation != XpcReadOnlyClientOperation::Status)
         return failed(XpcReadOnlyClientStatus::InvalidReply);
 
+    if (helperRequirement && !exactRequirementCompiles(*helperRequirement))
+        return failed(XpcReadOnlyClientStatus::InvalidPeerRequirement);
+
     xpc_connection_t connection = nullptr;
     if (testEndpoint) {
         connection = xpc_connection_create_from_endpoint(testEndpoint);
     } else {
         const std::string serviceName(launchdMachServiceName);
-        connection = xpc_connection_create_mach_service(serviceName.c_str(), nullptr, 0);
+        const uint64_t flags = helperRequirement ? XPC_CONNECTION_MACH_SERVICE_PRIVILEGED : 0;
+        connection = xpc_connection_create_mach_service(serviceName.c_str(), nullptr, flags);
     }
     if (!connection)
         return failed(XpcReadOnlyClientStatus::ConnectionFailed);
 
+    bool requirementInstalled = !helperRequirement;
+    if (helperRequirement) {
+        if (__builtin_available(macOS 12.0, *)) {
+            const QByteArray requirement(helperRequirement->constData(), helperRequirement->size());
+            requirementInstalled = xpc_connection_set_peer_code_signing_requirement(
+                                       connection, requirement.constData()) == 0;
+        }
+    }
+
     xpc_connection_set_event_handler(connection, ^(xpc_object_t){
                                      });
     xpc_connection_activate(connection);
+    if (!requirementInstalled) {
+        // A created connection must be activated before its last reference is released.
+        xpc_connection_cancel(connection);
+        xpc_release(connection);
+        return failed(XpcReadOnlyClientStatus::PeerVerificationSetupFailed);
+    }
 
     const char *operationName = operation == XpcReadOnlyClientOperation::Probe ? "probe" : "status";
     xpc_object_t message = xpc_dictionary_create(nullptr, nullptr, 0);
@@ -150,6 +180,10 @@ XpcReadOnlyClientResult XpcReadOnlyServiceClient::request(XpcReadOnlyClientOpera
 
     if (waitResult != 0)
         return failed(XpcReadOnlyClientStatus::TimedOut);
+    if (__builtin_available(macOS 12.0, *)) {
+        if (helperRequirement && state->reply == XPC_ERROR_PEER_CODE_SIGNING_REQUIREMENT)
+            return failed(XpcReadOnlyClientStatus::PeerIdentityMismatch);
+    }
     if (xpc_get_type(state->reply) == XPC_TYPE_ERROR)
         return failed(XpcReadOnlyClientStatus::ServiceUnavailable);
     return parseReply(state->reply, operation);

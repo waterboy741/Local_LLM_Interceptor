@@ -2,6 +2,7 @@
 
 #include <xpc/xpc.h>
 
+#include <QByteArray>
 #include <QString>
 
 #include <cstdint>
@@ -17,6 +18,9 @@ enum class XpcReadOnlyClientStatus {
     TimedOut,
     ServiceUnavailable,
     InvalidReply,
+    InvalidPeerRequirement,
+    PeerVerificationSetupFailed,
+    PeerIdentityMismatch,
 };
 
 struct XpcReadOnlyClientResult {
@@ -38,6 +42,9 @@ class XpcReadOnlyServiceClient final {
 
     XpcReadOnlyClientResult probe(int timeoutMs = defaultTimeoutMs) const;
     XpcReadOnlyClientResult status(int timeoutMs = defaultTimeoutMs) const;
+    // The caller must supply the exact cdhash requirement of the reviewed helper.
+    XpcReadOnlyClientResult trustedStatus(const QByteArray &helperRequirement,
+                                          int timeoutMs = defaultTimeoutMs) const;
 
   private:
     friend class M6XpcReadOnlyServiceClientTestAccess;
@@ -45,8 +52,12 @@ class XpcReadOnlyServiceClient final {
     static XpcReadOnlyClientResult
     requestWithEndpointForTesting(xpc_endpoint_t endpoint, XpcReadOnlyClientOperation operation,
                                   int timeoutMs);
+    static XpcReadOnlyClientResult
+    trustedStatusWithEndpointForTesting(xpc_endpoint_t endpoint,
+                                        const QByteArray &helperRequirement, int timeoutMs);
     static XpcReadOnlyClientResult request(XpcReadOnlyClientOperation operation, int timeoutMs,
-                                           xpc_endpoint_t testEndpoint);
+                                           xpc_endpoint_t testEndpoint,
+                                           const QByteArray *helperRequirement = nullptr);
 };
 
 } // namespace interceptor

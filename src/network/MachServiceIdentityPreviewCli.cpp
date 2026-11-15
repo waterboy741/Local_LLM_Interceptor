@@ -90,11 +90,13 @@ QString canonicalAppPath(const QString &path) {
     return canonical;
 }
 
+#if defined(Q_OS_MACOS)
 struct ExecutableStamp {
     dev_t device{};
     ino_t inode{};
     off_t size{};
-    time_t modified{};
+    timespec modified{};
+    timespec changed{};
 };
 
 bool executableStamp(const QString &appPath, ExecutableStamp *stamp) {
@@ -104,7 +106,7 @@ bool executableStamp(const QString &appPath, ExecutableStamp *stamp) {
     struct stat info{};
     if (::lstat(path.constData(), &info) != 0 || !S_ISREG(info.st_mode))
         return false;
-    *stamp = {info.st_dev, info.st_ino, info.st_size, info.st_mtime};
+    *stamp = {info.st_dev, info.st_ino, info.st_size, info.st_mtimespec, info.st_ctimespec};
     return true;
 }
 
@@ -112,8 +114,12 @@ bool sameExecutableStamp(const QString &appPath, const ExecutableStamp &before) 
     ExecutableStamp after;
     return executableStamp(appPath, &after) && before.device == after.device &&
            before.inode == after.inode && before.size == after.size &&
-           before.modified == after.modified;
+           before.modified.tv_sec == after.modified.tv_sec &&
+           before.modified.tv_nsec == after.modified.tv_nsec &&
+           before.changed.tv_sec == after.changed.tv_sec &&
+           before.changed.tv_nsec == after.changed.tv_nsec;
 }
+#endif
 
 QString cdhashRequirement(const QByteArray &output, const QString &expectedExecutable) {
     if (output.isEmpty() || output.contains('\0'))

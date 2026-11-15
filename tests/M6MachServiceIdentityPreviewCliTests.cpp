@@ -10,6 +10,8 @@
 
 #if defined(Q_OS_MACOS)
 #include <Security/SecRequirement.h>
+#include <fcntl.h>
+#include <sys/stat.h>
 #endif
 
 using namespace interceptor;
@@ -413,6 +415,71 @@ class M6MachServiceIdentityPreviewCliTests final : public QObject {
         QVERIFY(result.exitCode != 0);
         QVERIFY(result.standardOutput.isEmpty());
         QVERIFY(result.standardError.contains("app_executable_changed_during_preview"));
+    }
+
+    void sameSizeChangeWithinMtimeSecondNeverEmitsProposal_data() {
+        QTest::addColumn<bool>("restoreMtime");
+        QTest::newRow("subsecond-mtime-change") << false;
+        QTest::newRow("restored-mtime") << true;
+    }
+
+    void sameSizeChangeWithinMtimeSecondNeverEmitsProposal() {
+#if defined(Q_OS_MACOS)
+        QFETCH(bool, restoreMtime);
+        IdentityPreviewFixture fixture;
+        const QString executablePath =
+            fixture.canonicalAppPath + QStringLiteral("/Contents/MacOS/llm_interceptor");
+        const QByteArray nativePath = QFile::encodeName(executablePath);
+        const timespec originalTimes[] = {{0, UTIME_OMIT}, {1700000000, 100000000}};
+        const timespec changedTimes[] = {
+            {0, UTIME_OMIT}, {originalTimes[1].tv_sec, restoreMtime ? 100000000 : 200000000}};
+        const auto ctimeChanged = [](const struct stat &before, const struct stat &after) {
+            return before.st_ctimespec.tv_sec != after.st_ctimespec.tv_sec ||
+                   before.st_ctimespec.tv_nsec != after.st_ctimespec.tv_nsec;
+        };
+        QVERIFY(::utimensat(AT_FDCWD, nativePath.constData(), originalTimes, 0) == 0);
+        struct stat originalStamp{};
+        QVERIFY(::stat(nativePath.constData(), &originalStamp) == 0);
+
+        const QByteArray executableLine = "Executable=" + executablePath.toUtf8() + '\n';
+        const QByteArray designatedLine = QByteArrayLiteral(
+            "# designated => cdhash H\"0123456789abcdef0123456789abcdef01234567\"\n");
+        FakeCodesignRunner runner;
+        runner.preparedResults = {success(), success(designatedLine, executableLine), success()};
+        runner.onSelfMatch = [&] {
+            QFile executable(executablePath);
+            QVERIFY(executable.open(QIODevice::ReadWrite));
+            QCOMPARE(executable.write("S", 1), qint64{1});
+            QVERIFY(executable.flush());
+            executable.close();
+            const auto updateTimes = [&] {
+                struct stat stamp{};
+                return ::utimensat(AT_FDCWD, nativePath.constData(), changedTimes, 0) == 0 &&
+                       ::stat(nativePath.constData(), &stamp) == 0 &&
+                       (!restoreMtime || ctimeChanged(originalStamp, stamp));
+            };
+            QTRY_VERIFY_WITH_TIMEOUT(updateTimes(), 2000);
+        };
+
+        const auto result = MachServiceIdentityPreviewCli::run(fixture.arguments(), runner);
+
+        QCOMPARE(runner.calls.size(), 3);
+        struct stat changedStamp{};
+        QVERIFY(::stat(nativePath.constData(), &changedStamp) == 0);
+        QCOMPARE(changedStamp.st_dev, originalStamp.st_dev);
+        QCOMPARE(changedStamp.st_ino, originalStamp.st_ino);
+        QCOMPARE(changedStamp.st_size, originalStamp.st_size);
+        QCOMPARE(changedStamp.st_mtimespec.tv_sec, originalStamp.st_mtimespec.tv_sec);
+        QCOMPARE(originalStamp.st_mtimespec.tv_nsec, originalTimes[1].tv_nsec);
+        QCOMPARE(changedStamp.st_mtimespec.tv_nsec, changedTimes[1].tv_nsec);
+        if (restoreMtime)
+            QVERIFY(ctimeChanged(originalStamp, changedStamp));
+        QVERIFY(result.exitCode != 0);
+        QVERIFY(result.standardOutput.isEmpty());
+        QVERIFY(result.standardError.contains("app_executable_changed_during_preview"));
+#else
+        QSKIP("codesign identity preview is macOS-only");
+#endif
     }
 
     void parserHelpAndInvalidBundleDoNotInvokeCodesign() {

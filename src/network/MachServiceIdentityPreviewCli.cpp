@@ -213,6 +213,17 @@ CodesignCommandResult runWithRunner(const QStringList &arguments, CodesignComman
     if (requirement.isEmpty() || !exactRequirementCompiles(requirement.toUtf8()))
         return failure(1, QStringLiteral("exact_cdhash_requirement_unavailable"));
 
+    const auto verifyRequirement =
+        runner.run({QStringLiteral("--verify"), QStringLiteral("--strict"),
+                    QStringLiteral("--deep"), QStringLiteral("-R=") + requirement, appPath},
+                   commandTimeoutMs, maximumOutputBytes);
+    if (!successful(verifyRequirement))
+        return failure(1, verifyRequirement.timedOut
+                              ? QStringLiteral("codesign_requirement_verification_timed_out")
+                              : QStringLiteral("codesign_requirement_verification_failed"));
+    if (!sameExecutableStamp(appPath, before))
+        return failure(1, QStringLiteral("app_executable_changed_during_preview"));
+
     const QString proposal =
         QStringLiteral("enabled=false\npeer-code-requirement=%1\n").arg(requirement);
     return {true, true, false, 0, proposal.toUtf8(), {}};

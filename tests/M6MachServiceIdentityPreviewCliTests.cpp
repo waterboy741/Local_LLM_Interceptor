@@ -6,6 +6,8 @@
 #include <QTemporaryDir>
 #include <QtTest>
 
+#include <functional>
+
 #if defined(Q_OS_MACOS)
 #include <Security/SecRequirement.h>
 #endif
@@ -22,6 +24,7 @@ class FakeCodesignRunner final : public CodesignCommandRunner {
     QVector<QStringList> calls;
     QVector<int> timeouts;
     QVector<qsizetype> outputLimits;
+    std::function<void()> onSelfMatch;
 
     CodesignCommandResult run(const QStringList &arguments, int timeoutMs,
                               qsizetype outputLimitBytes) override {
@@ -29,9 +32,11 @@ class FakeCodesignRunner final : public CodesignCommandRunner {
         timeouts.append(timeoutMs);
         outputLimits.append(outputLimitBytes);
         const qsizetype index = calls.size() - 1;
+        if (index == 2 && onSelfMatch)
+            onSelfMatch();
         if (index < preparedResults.size())
             return preparedResults.at(index);
-        return {true, true, false, 0, {}, {}};
+        return {false, false, false, -1, {}, {}};
     }
 };
 
@@ -92,7 +97,7 @@ class M6MachServiceIdentityPreviewCliTests final : public QObject {
                                           QByteArrayLiteral("/Contents/MacOS/llm_interceptor\n");
         const QByteArray designatedLine = QByteArrayLiteral(
             "# designated => cdhash H\"0123456789abcdef0123456789abcdef01234567\"\n");
-        runner.preparedResults = {success(), success(designatedLine, executableLine)};
+        runner.preparedResults = {success(), success(designatedLine, executableLine), success()};
 
         const auto result = MachServiceIdentityPreviewCli::run(fixture.arguments(), runner);
 
@@ -103,14 +108,20 @@ class M6MachServiceIdentityPreviewCliTests final : public QObject {
                 "enabled=false\n"
                 "peer-code-requirement=cdhash H\"0123456789abcdef0123456789abcdef01234567\"\n"));
         QVERIFY(result.standardError.isEmpty());
-        QCOMPARE(runner.calls.size(), 2);
+        QCOMPARE(runner.calls.size(), 3);
         QCOMPARE(runner.calls.at(0),
                  (QStringList{QStringLiteral("--verify"), QStringLiteral("--strict"),
                               QStringLiteral("--deep"), fixture.canonicalAppPath}));
         QCOMPARE(runner.calls.at(1), (QStringList{QStringLiteral("-d"), QStringLiteral("-r-"),
                                                   fixture.canonicalAppPath}));
-        QCOMPARE(runner.timeouts, (QVector<int>{5000, 5000}));
-        QCOMPARE(runner.outputLimits, (QVector<qsizetype>{16 * 1024, 16 * 1024}));
+        QCOMPARE(
+            runner.calls.at(2),
+            (QStringList{QStringLiteral("--verify"), QStringLiteral("--strict"),
+                         QStringLiteral("--deep"),
+                         QStringLiteral("-R=cdhash H\"0123456789abcdef0123456789abcdef01234567\""),
+                         fixture.canonicalAppPath}));
+        QCOMPARE(runner.timeouts, (QVector<int>{5000, 5000, 5000}));
+        QCOMPARE(runner.outputLimits, (QVector<qsizetype>{16 * 1024, 16 * 1024, 16 * 1024}));
         QCOMPARE(QDir(fixture.appPath).entryList(QDir::AllEntries | QDir::NoDotAndDotDot),
                  QStringList{QStringLiteral("Contents")});
         QCOMPARE(QDir(fixture.appPath + QStringLiteral("/Contents/MacOS"))
@@ -130,7 +141,8 @@ class M6MachServiceIdentityPreviewCliTests final : public QObject {
                                           fixture.canonicalAppPath.toUtf8() +
                                           QByteArrayLiteral("/Contents/MacOS/llm_interceptor\n");
         runner.preparedResults = {
-            success(), success({}, executableLine + "# designated => " + requirement + '\n')};
+            success(), success({}, executableLine + "# designated => " + requirement + '\n'),
+            success()};
 
         const CFStringRef requirementText = CFStringCreateWithCString(
             kCFAllocatorDefault, requirement.constData(), kCFStringEncodingUTF8);
@@ -145,7 +157,7 @@ class M6MachServiceIdentityPreviewCliTests final : public QObject {
 
         const auto result = MachServiceIdentityPreviewCli::run(fixture.arguments(), runner);
 
-        QCOMPARE(runner.calls.size(), 2);
+        QCOMPARE(runner.calls.size(), supported ? 3 : 2);
         if (supported) {
             QVERIFY2(result.exitCode == 0, result.standardError.constData());
             QCOMPARE(result.standardOutput,
@@ -340,6 +352,67 @@ class M6MachServiceIdentityPreviewCliTests final : public QObject {
             QVERIFY(result.exitCode != 0);
             QVERIFY(result.standardOutput.isEmpty());
         }
+    }
+
+    void selfMatchFailuresNeverEmitProposal() {
+        if (!identityPreviewIsSupported())
+            QSKIP("codesign identity preview is macOS-only");
+
+        IdentityPreviewFixture fixture;
+        const QByteArray executableLine = QByteArrayLiteral("Executable=") +
+                                          fixture.canonicalAppPath.toUtf8() +
+                                          QByteArrayLiteral("/Contents/MacOS/llm_interceptor\n");
+        const QByteArray designatedLine = QByteArrayLiteral(
+            "# designated => cdhash H\"0123456789abcdef0123456789abcdef01234567\"\n");
+        const QList<CodesignCommandResult> failures = {
+            {true, true, false, 3, {}, QByteArrayLiteral("test requirement failed")},
+            {false, false, false, -1, {}, {}},
+            {true, false, false, -1, {}, {}},
+            {true, false, true, -1, {}, {}},
+            {true, true, false, 0, QByteArray(16 * 1024 + 1, 'x'), {}},
+            {true, true, false, 0, {}, QByteArray(16 * 1024 + 1, 'x')},
+            {true, true, false, 2, {}, QByteArrayLiteral("codesign failed")}};
+        for (const auto &selfMatchResult : failures) {
+            FakeCodesignRunner runner;
+            runner.preparedResults = {success(), success(designatedLine, executableLine),
+                                      selfMatchResult};
+            const auto result = MachServiceIdentityPreviewCli::run(fixture.arguments(), runner);
+            QVERIFY(result.exitCode != 0);
+            QVERIFY(result.standardOutput.isEmpty());
+            QVERIFY(result.standardError.contains(
+                selfMatchResult.timedOut ? "codesign_requirement_verification_timed_out"
+                                         : "codesign_requirement_verification_failed"));
+            QCOMPARE(runner.calls.size(), 3);
+        }
+    }
+
+    void executableChangeDuringSelfMatchNeverEmitsProposal() {
+        if (!identityPreviewIsSupported())
+            QSKIP("codesign identity preview is macOS-only");
+
+        IdentityPreviewFixture fixture;
+        const QString executablePath =
+            fixture.canonicalAppPath + QStringLiteral("/Contents/MacOS/llm_interceptor");
+        const QByteArray executableLine = "Executable=" + executablePath.toUtf8() + '\n';
+        const QByteArray designatedLine = QByteArrayLiteral(
+            "# designated => cdhash H\"0123456789abcdef0123456789abcdef01234567\"\n");
+        FakeCodesignRunner runner;
+        runner.preparedResults = {success(), success(designatedLine, executableLine), success()};
+        bool executableChanged = false;
+        runner.onSelfMatch = [&] {
+            QFile executable(executablePath);
+            const QByteArray appendedBytes = QByteArrayLiteral("changed during verification\n");
+            executableChanged = executable.open(QIODevice::Append) &&
+                                executable.write(appendedBytes) == appendedBytes.size();
+        };
+
+        const auto result = MachServiceIdentityPreviewCli::run(fixture.arguments(), runner);
+
+        QVERIFY(executableChanged);
+        QCOMPARE(runner.calls.size(), 3);
+        QVERIFY(result.exitCode != 0);
+        QVERIFY(result.standardOutput.isEmpty());
+        QVERIFY(result.standardError.contains("app_executable_changed_during_preview"));
     }
 
     void parserHelpAndInvalidBundleDoNotInvokeCodesign() {

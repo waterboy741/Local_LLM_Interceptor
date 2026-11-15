@@ -15,7 +15,7 @@ ctest --preset debug --output-on-failure
 
 The release and sanitizer presets use the same commands with their respective names. Sanitizer configuration checks compiler/linker support for AddressSanitizer and UndefinedBehaviorSanitizer. Tests run offscreen without capture privileges. M0 synthetic fixture checks can also run with `python3 -m unittest discover -s tests -p 'test_m0_fixtures.py' -v`.
 
-On macOS with Python 3 available, `ctest --preset debug -R '^m6_codesign_smoke$'` checks signed GUI staging with the system `codesign` tool and the built identity preview CLI. It uses a temporary copy of the built app and runs offline without installing a helper or requiring administrator privileges.
+On macOS with Python 3 available, `ctest --preset debug -R '^m6_codesign_smoke$'` checks signed GUI staging with the system `codesign` tool and the built identity preview CLI. It verifies that the exact generated cdhash requirement matches the staged app and that a mismatched requirement is rejected. The test uses a temporary copy of the built app and runs offline without installing or enabling a helper or requiring administrator privileges.
 
 On macOS with Python 3 available, `ctest --preset debug -R '^m6_helper_package_codesign_smoke$'` stages the built helper with the launchd helper packaging script in a temporary directory. The test uses the system `codesign` tool to verify the staged copy’s embedded signature. It runs offline without installing the helper or requiring administrator privileges.
 

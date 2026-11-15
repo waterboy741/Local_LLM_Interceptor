@@ -67,6 +67,27 @@ class CodesignSmokeTests(unittest.TestCase):
             )
             self.assertEqual(result.stdout, expected_output)
 
+            proposal = re.search(
+                rb'^enabled=false\npeer-code-requirement=(cdhash H"([0-9a-f]{40}|[0-9a-f]{64})")$',
+                result.stdout,
+                re.MULTILINE,
+            )
+            self.assertIsNotNone(proposal, result.stdout)
+            assert proposal is not None
+            peer_requirement, peer_hash = (field.decode("ascii") for field in proposal.groups())
+            self.assert_success(run(
+                CODESIGN, "--verify", "--strict", "--deep", f"-R={peer_requirement}", staged,
+            ))
+
+            replacement = "1" if peer_hash[0] == "0" else "0"
+            mismatched_hash = replacement + peer_hash[1:]
+            mismatch = run(
+                CODESIGN, "--verify", "--strict", "--deep",
+                f'-R=cdhash H"{mismatched_hash}"', staged,
+            )
+            self.assertNotEqual(mismatch.returncode, 0, (mismatch.stdout, mismatch.stderr))
+            self.assertIn(b"code failed to satisfy specified code requirement(s)", mismatch.stderr)
+
         self.assertEqual(bundle_contents(source), original_contents)
         final_signature = run(CODESIGN, "--display", "--verbose=4", source)
         self.assertEqual(final_signature.returncode, original_signature.returncode)

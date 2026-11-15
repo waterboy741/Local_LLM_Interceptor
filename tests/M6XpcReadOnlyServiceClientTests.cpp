@@ -227,6 +227,7 @@ class M6XpcReadOnlyServiceClientTests final : public QObject {
             service.endpoint(), QByteArray::fromRawData(backing.constData(), requirement.size()));
         QCOMPARE(verified.status, XpcReadOnlyClientStatus::Success);
         QVERIFY(verified.ok);
+        QVERIFY(verified.peerIdentityVerified);
         QCOMPARE(verified.state, QStringLiteral("inactive"));
 
         hash[0] = hash.at(0) == '0' ? '1' : '0';
@@ -234,6 +235,7 @@ class M6XpcReadOnlyServiceClientTests final : public QObject {
             service.endpoint(), "cdhash H\"" + hash + "\"");
         QCOMPARE(mismatch.status, XpcReadOnlyClientStatus::PeerIdentityMismatch);
         QVERIFY(!mismatch.ok);
+        QVERIFY(!mismatch.peerIdentityVerified);
         QVERIFY(mismatch.service.isEmpty());
         QVERIFY(mismatch.state.isEmpty());
         QCOMPARE(mismatch.protocolVersion, 0ULL);

@@ -1,5 +1,6 @@
 #include "MainWindow.hpp"
 #include "inspection/InspectionArchive.hpp"
+#include "network/HelperIdentity.hpp"
 #include <QCheckBox>
 #include <QCloseEvent>
 #include <QComboBox>
@@ -152,7 +153,14 @@ QString jsonDiff(const QByteArray &original, const QByteArray &edited) {
 } // namespace
 
 MainWindow::MainWindow(SessionController *controller, QWidget *parent)
-    : MainWindow(controller, [] { return XpcReadOnlyServiceClient{}.status(); }, parent) {}
+    : MainWindow(
+          controller,
+          [] {
+              return queryTrustedHelperStatus(loadHelperIdentity(), [](const QByteArray &value) {
+                  return XpcReadOnlyServiceClient{}.trustedStatus(value);
+              });
+          },
+          parent) {}
 
 MainWindow::MainWindow(SessionController *controller,
                        std::function<XpcReadOnlyClientResult()> helperStatusRequest,
@@ -246,40 +254,53 @@ MainWindow::MainWindow(SessionController *controller,
     helperLayout->addWidget(checkHelperStatus);
     helperLayout->addWidget(helperStatus, 1);
     layout->addWidget(helperRow);
-    connect(checkHelperStatus, &QPushButton::clicked, this,
-            [this, checkHelperStatus, helperStatus, helperStatusRequest] {
-                checkHelperStatus->setEnabled(false);
-                helperStatus->setText("Checking helper service…");
-                const auto requestGeneration = ++helperStatusGeneration_;
-                auto *watcher = new QFutureWatcher<XpcReadOnlyClientResult>(this);
-                connect(watcher, &QFutureWatcher<XpcReadOnlyClientResult>::finished, this,
-                        [this, watcher, checkHelperStatus, helperStatus, requestGeneration] {
-                            // The worker owns only the copied request callable. Its bounded XPC
-                            // wait can finish after this window closes or the session is cleared.
-                            if (requestGeneration != helperStatusGeneration_) {
-                                watcher->deleteLater();
-                                return;
-                            }
-                            const auto result = watcher->result();
-                            if (result.succeeded()) {
-                                helperStatus->setText(
-                                    QString("Helper available — state: %1 (protocol v%2).")
-                                        .arg(result.state)
-                                        .arg(result.protocolVersion));
-                            } else if (result.status ==
-                                       XpcReadOnlyClientStatus::ServiceUnavailable) {
-                                helperStatus->setText(
-                                    "Helper unavailable — launchd service is not available.");
-                            } else if (result.status == XpcReadOnlyClientStatus::TimedOut) {
-                                helperStatus->setText("Helper status check timed out.");
-                            } else {
-                                helperStatus->setText("Helper status check failed.");
-                            }
-                            checkHelperStatus->setEnabled(true);
-                            watcher->deleteLater();
-                        });
-                watcher->setFuture(QtConcurrent::run(helperStatusRequest));
-            });
+    connect(
+        checkHelperStatus, &QPushButton::clicked, this,
+        [this, checkHelperStatus, helperStatus, helperStatusRequest] {
+            checkHelperStatus->setEnabled(false);
+            helperStatus->setText("Checking helper service…");
+            const auto requestGeneration = ++helperStatusGeneration_;
+            auto *watcher = new QFutureWatcher<XpcReadOnlyClientResult>(this);
+            connect(
+                watcher, &QFutureWatcher<XpcReadOnlyClientResult>::finished, this,
+                [this, watcher, checkHelperStatus, helperStatus, requestGeneration] {
+                    // The worker owns only the copied request callable. Its bounded XPC
+                    // wait can finish after this window closes or the session is cleared.
+                    if (requestGeneration != helperStatusGeneration_) {
+                        watcher->deleteLater();
+                        return;
+                    }
+                    const auto result = watcher->result();
+                    if (result.succeeded()) {
+                        helperStatus->setText(
+                            QString(result.peerIdentityVerified
+                                        ? "Helper identity verified — state: %1 (protocol v%2)."
+                                        : "Helper available — state: %1 (protocol v%2).")
+                                .arg(result.state)
+                                .arg(result.protocolVersion));
+                    } else if (result.status == XpcReadOnlyClientStatus::ServiceUnavailable) {
+                        helperStatus->setText(
+                            "Helper unavailable — launchd service is not available.");
+                    } else if (result.status == XpcReadOnlyClientStatus::HelperIdentityMissing) {
+                        helperStatus->setText("Helper identity not configured.");
+                    } else if (result.status == XpcReadOnlyClientStatus::HelperIdentityInvalid) {
+                        helperStatus->setText("Helper identity configuration is invalid.");
+                    } else if (result.status == XpcReadOnlyClientStatus::PeerIdentityMismatch) {
+                        helperStatus->setText(
+                            "Helper identity does not match the configured requirement.");
+                    } else if (result.status ==
+                               XpcReadOnlyClientStatus::PeerVerificationSetupFailed) {
+                        helperStatus->setText("Helper identity verification could not be set up.");
+                    } else if (result.status == XpcReadOnlyClientStatus::TimedOut) {
+                        helperStatus->setText("Helper status check timed out.");
+                    } else {
+                        helperStatus->setText("Helper status check failed.");
+                    }
+                    checkHelperStatus->setEnabled(true);
+                    watcher->deleteLater();
+                });
+            watcher->setFuture(QtConcurrent::run(helperStatusRequest));
+        });
     connect(stop, &QPushButton::clicked, this, [this, helperStatus, checkHelperStatus] {
         ++helperStatusGeneration_;
         helperStatus->setText("Helper status not checked.");

@@ -186,7 +186,9 @@ XpcReadOnlyClientResult XpcReadOnlyServiceClient::request(XpcReadOnlyClientOpera
     }
     if (xpc_get_type(state->reply) == XPC_TYPE_ERROR)
         return failed(XpcReadOnlyClientStatus::ServiceUnavailable);
-    return parseReply(state->reply, operation);
+    auto result = parseReply(state->reply, operation);
+    result.peerIdentityVerified = helperRequirement && result.succeeded();
+    return result;
 }
 
 } // namespace interceptor

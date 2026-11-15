@@ -79,6 +79,41 @@ class M6HelperStatusGuiTests final : public QObject {
                       QStringLiteral("Helper status check timed out."));
     }
 
+    void missingAndInvalidHelperIdentityHaveFixedMessages() {
+        verifyMessage(XpcReadOnlyClientStatus::HelperIdentityMissing,
+                      QStringLiteral("Helper identity not configured."));
+        verifyMessage(XpcReadOnlyClientStatus::HelperIdentityInvalid,
+                      QStringLiteral("Helper identity configuration is invalid."));
+    }
+
+    void verificationFailuresHaveFixedMessages() {
+        verifyMessage(XpcReadOnlyClientStatus::PeerIdentityMismatch,
+                      QStringLiteral("Helper identity does not match the configured requirement."));
+        verifyMessage(XpcReadOnlyClientStatus::PeerVerificationSetupFailed,
+                      QStringLiteral("Helper identity verification could not be set up."));
+    }
+
+    void verifiedSuccessShowsVerifiedIdentity() {
+        SessionController controller;
+        MainWindow window(&controller, [] {
+            XpcReadOnlyClientResult result;
+            result.status = XpcReadOnlyClientStatus::Success;
+            result.ok = true;
+            result.peerIdentityVerified = true;
+            result.state = QStringLiteral("inactive");
+            result.protocolVersion = 1;
+            return result;
+        });
+        auto *button = window.findChild<QPushButton *>("checkHelperStatusButton");
+        auto *status = window.findChild<QLabel *>("helperStatus");
+        QVERIFY(button && status);
+        button->click();
+        QTRY_COMPARE_WITH_TIMEOUT(
+            status->text(),
+            QStringLiteral("Helper identity verified — state: inactive (protocol v1)."), 2000);
+        QVERIFY(button->isEnabled());
+    }
+
     void clearSessionIgnoresPendingResultAndResetsStatus() {
         SessionController controller;
         std::atomic_bool queryStarted = false;

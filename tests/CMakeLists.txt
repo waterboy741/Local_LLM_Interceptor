@@ -16,6 +16,11 @@ set_tests_properties(m6_helper_status_gui PROPERTIES
     TIMEOUT 30
 )
 
+qt_add_executable(m6_helper_identity_tests M6HelperIdentityTests.cpp)
+target_link_libraries(m6_helper_identity_tests PRIVATE interceptor_network Qt6::Test)
+add_test(NAME m6_helper_identity COMMAND m6_helper_identity_tests)
+set_tests_properties(m6_helper_identity PROPERTIES TIMEOUT 30)
+
 qt_add_executable(m2_proxy_tests M2ProxyTests.cpp)
 target_link_libraries(m2_proxy_tests PRIVATE interceptor_proxy Qt6::Test)
 add_test(NAME m2_proxy COMMAND m2_proxy_tests)

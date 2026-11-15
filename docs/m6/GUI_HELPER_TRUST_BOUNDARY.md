@@ -8,9 +8,9 @@ This document narrows package A of the [M6 implementation backlog](IMPLEMENTATIO
 - `src/network/LaunchdMachServiceBootstrap.cpp` reads an opt-in, root-owned config. An enabled config accepts only one exact, locally compilable GUI cdhash requirement. The checked-in example is disabled.
 - `src/network/MachServicePeerAuthenticator.cpp` checks the signed identity of an incoming XPC message before `XpcControlRequestGate` parses its operation.
 - `src/network/XpcReadOnlyServiceClient.cpp` enforces a bounded wait and exact reply shape. `src/gui/MainWindow.cpp` runs the status call off the GUI thread and discards stale results after a session clear.
-- The read-only client currently identifies the endpoint by fixed Mach service name and protocol fields. It has no separately provisioned expected **helper** code identity. A successful reply is service availability evidence, not yet an independent proof of the helper executable's identity.
+- The GUI reads the separately provisioned **helper** cdhash from the fixed identity file described in the [helper bootstrap contract](INSTALLED_HELPER_BOOTSTRAP.md#gui-helper-identity). It requests status from the privileged Mach service only when that identity loads successfully and reports a verified identity only after the OS peer check and reply validation succeed.
 - `scripts/package_launchd_helper.py` only stages files for review. It does not sign, install, or load a service. The root-only state directory is intentionally inaccessible to the ordinary GUI process.
-- The offline package smoke test checks the staged helper's embedded signature, verifies that its literal cdhash requirement matches the staged executable, and checks rejection of a different cdhash. This verifies the file selected for review. Verification of the running Mach service and provisioning the GUI's expected helper identity remain part of the subsequent work. [Helper bootstrap contract](INSTALLED_HELPER_BOOTSTRAP.md)
+- The offline package smoke test checks the staged helper's embedded signature, verifies that its literal cdhash requirement matches the staged executable, and checks rejection of a different cdhash. This verifies the file selected for review. An installed-service smoke test remains part of A3. [Helper bootstrap contract](INSTALLED_HELPER_BOOTSTRAP.md)
 
 ## Boundary requirements
 
@@ -36,9 +36,9 @@ Use anonymous XPC endpoints for deterministic malformed-message and timeout case
 
 ## Decisions to record before installation
 
-- Exact helper signing method for the target Mac and how its expected code requirement is delivered to the GUI without letting an untrusted service supply its own trust policy.
+- Exact helper signing method for the target Mac and review of the resulting cdhash before it is provisioned in the fixed identity file.
 - GUI signing method and whether a local ad-hoc identity is acceptable for the research installation. Rebuilding or re-signing changes a pinned cdhash.
 - Service domain, upgrade behavior, and uninstall order. The review package currently supplies a launchd artifact but no supported installer.
 - Whether the operator will approve one fixed build or a signed update channel. A broader signer/team requirement changes the trust model and needs a separate review.
 
-**Exit criterion:** the GUI can query the installed helper read-only with mutual identity checks, and both endpoints reject the wrong build. Until then, the GUI's helper status is advisory only. The next milestone after this is synthetic helper lifecycle integration, not live traffic activation.
+**Exit criterion:** the GUI can query the installed helper read-only with mutual identity checks, and both endpoints reject the wrong build. A3 verifies this against the installed service on the target Mac. The next milestone after this is synthetic helper lifecycle integration.

@@ -21,6 +21,8 @@ enum class XpcReadOnlyClientStatus {
     InvalidPeerRequirement,
     PeerVerificationSetupFailed,
     PeerIdentityMismatch,
+    HelperIdentityMissing,
+    HelperIdentityInvalid,
 };
 
 struct XpcReadOnlyClientResult {
@@ -29,6 +31,7 @@ struct XpcReadOnlyClientResult {
     QString service;
     QString state;
     std::uint64_t protocolVersion = 0;
+    bool peerIdentityVerified = false;
 
     bool succeeded() const { return status == XpcReadOnlyClientStatus::Success; }
 };

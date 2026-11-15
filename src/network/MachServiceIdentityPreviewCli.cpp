@@ -1,5 +1,7 @@
 #include "MachServiceIdentityPreviewCli.hpp"
 
+#include "LaunchdMachServiceBootstrap.hpp"
+
 #include <QCommandLineParser>
 #include <QElapsedTimer>
 #include <QFileInfo>
@@ -208,7 +210,7 @@ CodesignCommandResult runWithRunner(const QStringList &arguments, CodesignComman
     }
     const QString expectedExecutable = appPath + QStringLiteral("/Contents/MacOS/llm_interceptor");
     const QString requirement = cdhashRequirement(combined, expectedExecutable);
-    if (requirement.isEmpty())
+    if (requirement.isEmpty() || !exactRequirementCompiles(requirement.toUtf8()))
         return failure(1, QStringLiteral("exact_cdhash_requirement_unavailable"));
 
     const QString proposal =

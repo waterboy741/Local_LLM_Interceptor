@@ -44,10 +44,13 @@ bool requirementCompiles(const QByteArray &requirement) {
     const OSStatus status =
         SecRequirementCreateWithString(requirementText, kSecCSDefaultFlags, &compiled);
     CFRelease(requirementText);
-    if (compiled)
-        CFRelease(compiled);
+    if (!compiled)
+        return false;
+    CFRelease(compiled);
     return status == errSecSuccess;
 }
+
+} // namespace
 
 bool exactRequirementCompiles(const QByteArray &requirement) {
     constexpr qsizetype literalOverhead = sizeof("cdhash H\"\"") - 1;
@@ -58,8 +61,6 @@ bool exactRequirementCompiles(const QByteArray &requirement) {
     return literal.match(QString::fromLatin1(requirement)).hasMatch() &&
            requirementCompiles(requirement);
 }
-
-} // namespace
 
 bool parseLaunchdMachServiceConfig(const QByteArray &contents, LaunchdMachServiceConfig *config,
                                    QString *error) {

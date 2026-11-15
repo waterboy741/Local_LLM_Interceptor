@@ -14,6 +14,9 @@ struct LaunchdMachServiceConfig {
     QByteArray trustedPeerRequirement;
 };
 
+// Checks the literal cdhash syntax and compiles it with local Security.framework.
+bool exactRequirementCompiles(const QByteArray &requirement);
+
 // The config is deliberately strict so a typo or partial edit cannot enable
 // the listener. The requirement is compiled by Security.framework here.
 bool parseLaunchdMachServiceConfig(const QByteArray &contents, LaunchdMachServiceConfig *config,

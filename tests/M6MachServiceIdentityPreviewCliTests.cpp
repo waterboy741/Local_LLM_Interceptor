@@ -6,6 +6,10 @@
 #include <QTemporaryDir>
 #include <QtTest>
 
+#if defined(Q_OS_MACOS)
+#include <Security/SecRequirement.h>
+#endif
+
 using namespace interceptor;
 
 namespace {
@@ -117,6 +121,46 @@ class M6MachServiceIdentityPreviewCliTests final : public QObject {
         QCOMPARE(executable.readAll(), QByteArrayLiteral("synthetic test executable\n"));
     }
 
+    void extendedCdhashProposalMatchesLocalRequirementCompiler() {
+#if defined(Q_OS_MACOS)
+        IdentityPreviewFixture fixture;
+        FakeCodesignRunner runner;
+        const QByteArray requirement = QByteArrayLiteral("cdhash H\"") + QByteArray(64, 'a') + '"';
+        const QByteArray executableLine = QByteArrayLiteral("Executable=") +
+                                          fixture.canonicalAppPath.toUtf8() +
+                                          QByteArrayLiteral("/Contents/MacOS/llm_interceptor\n");
+        runner.preparedResults = {
+            success(), success({}, executableLine + "# designated => " + requirement + '\n')};
+
+        const CFStringRef requirementText = CFStringCreateWithCString(
+            kCFAllocatorDefault, requirement.constData(), kCFStringEncodingUTF8);
+        QVERIFY(requirementText);
+        SecRequirementRef compiled = nullptr;
+        const OSStatus status =
+            SecRequirementCreateWithString(requirementText, kSecCSDefaultFlags, &compiled);
+        CFRelease(requirementText);
+        const bool supported = status == errSecSuccess && compiled != nullptr;
+        if (compiled)
+            CFRelease(compiled);
+
+        const auto result = MachServiceIdentityPreviewCli::run(fixture.arguments(), runner);
+
+        QCOMPARE(runner.calls.size(), 2);
+        if (supported) {
+            QVERIFY2(result.exitCode == 0, result.standardError.constData());
+            QCOMPARE(result.standardOutput,
+                     "enabled=false\npeer-code-requirement=" + requirement + '\n');
+            QVERIFY(result.standardError.isEmpty());
+        } else {
+            QVERIFY(result.exitCode != 0);
+            QVERIFY(result.standardOutput.isEmpty());
+            QVERIFY(!result.standardError.isEmpty());
+        }
+#else
+        QSKIP("codesign identity preview is macOS-only");
+#endif
+    }
+
     void absentMalformedAndBroadRequirementsFailClosed() {
         if (!identityPreviewIsSupported())
             QSKIP("codesign identity preview is macOS-only");
@@ -135,7 +179,10 @@ class M6MachServiceIdentityPreviewCliTests final : public QObject {
         for (const QByteArray &output : rejectedOutputs) {
             IdentityPreviewFixture fixture;
             FakeCodesignRunner runner;
-            runner.preparedResults = {success(), success({}, output)};
+            const QByteArray executableLine =
+                QByteArrayLiteral("Executable=") + fixture.canonicalAppPath.toUtf8() +
+                QByteArrayLiteral("/Contents/MacOS/llm_interceptor\n");
+            runner.preparedResults = {success(), success({}, executableLine + output)};
             const auto result = MachServiceIdentityPreviewCli::run(fixture.arguments(), runner);
             QVERIFY(result.exitCode != 0);
             QVERIFY(result.standardOutput.isEmpty());

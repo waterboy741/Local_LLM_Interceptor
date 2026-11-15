@@ -3,6 +3,7 @@
 #include <Security/SecRequirement.h>
 
 #include <QList>
+#include <QRegularExpression>
 
 #include <cerrno>
 #include <fcntl.h>
@@ -48,6 +49,16 @@ bool requirementCompiles(const QByteArray &requirement) {
     return status == errSecSuccess;
 }
 
+bool exactRequirementCompiles(const QByteArray &requirement) {
+    constexpr qsizetype literalOverhead = sizeof("cdhash H\"\"") - 1;
+    if (requirement.size() != literalOverhead + 40 && requirement.size() != literalOverhead + 64)
+        return false;
+    static const QRegularExpression literal(QStringLiteral(
+        R"requirement(\Acdhash H"(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})"\z)requirement"));
+    return literal.match(QString::fromLatin1(requirement)).hasMatch() &&
+           requirementCompiles(requirement);
+}
+
 } // namespace
 
 bool parseLaunchdMachServiceConfig(const QByteArray &contents, LaunchdMachServiceConfig *config,
@@ -71,15 +82,16 @@ bool parseLaunchdMachServiceConfig(const QByteArray &contents, LaunchdMachServic
         return fail(error, "launchd_mach_service_config_format_invalid");
 
     const QByteArray requirement = lines.at(1).mid(sizeof("peer-code-requirement=") - 1);
-    if (!validRequirement(requirement) || !requirementCompiles(requirement))
+    const bool enabled = lines.at(0) == "enabled=true";
+    const bool valid = enabled ? exactRequirementCompiles(requirement)
+                               : validRequirement(requirement) && requirementCompiles(requirement);
+    if (!valid)
         return fail(error, "launchd_mach_service_peer_requirement_invalid");
 
-    config->enabled = lines.at(0) == "enabled=true";
-    config->trustedPeerRequirement = requirement;
-    if (!config->enabled) {
-        *config = LaunchdMachServiceConfig{};
+    if (!enabled)
         return fail(error, "launchd_mach_service_disabled");
-    }
+    config->enabled = true;
+    config->trustedPeerRequirement = requirement;
     return true;
 }
 
@@ -140,8 +152,7 @@ bool startConfiguredLaunchdMachService(const LaunchdMachServiceConfig &config,
         error->clear();
     if (!config.enabled)
         return fail(error, "launchd_mach_service_disabled");
-    if (!validRequirement(config.trustedPeerRequirement) ||
-        !requirementCompiles(config.trustedPeerRequirement))
+    if (!exactRequirementCompiles(config.trustedPeerRequirement))
         return fail(error, "launchd_mach_service_peer_requirement_invalid");
     if (!start)
         return fail(error, "launchd_mach_service_start_unavailable");

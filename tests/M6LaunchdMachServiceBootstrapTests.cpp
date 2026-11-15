@@ -11,23 +11,28 @@ class M6LaunchdMachServiceBootstrapTests final : public QObject {
     Q_OBJECT
 
   private slots:
+    void parsesEnabledConfigAndPreservesTrustedRequirement_data() {
+        QTest::addColumn<QByteArray>("requirement");
+        QTest::newRow("40 lowercase hex") << exactPeerRequirement();
+        QTest::newRow("40 mixed case hex")
+            << QByteArrayLiteral("cdhash H\"0123456789AbCdEf0123456789aBcDeF01234567\"");
+    }
+
     void parsesEnabledConfigAndPreservesTrustedRequirement() {
+        QFETCH(QByteArray, requirement);
+        const QByteArray contents = "enabled=true\npeer-code-requirement=" + requirement;
         LaunchdMachServiceConfig config;
         QString error = QStringLiteral("stale");
 
-        QVERIFY2(parseLaunchdMachServiceConfig(
-                     QByteArrayLiteral("enabled=true\npeer-code-requirement=anchor apple\n"),
-                     &config, &error),
+        QVERIFY2(parseLaunchdMachServiceConfig(contents + '\n', &config, &error),
                  qPrintable(error));
         QVERIFY(config.enabled);
-        QCOMPARE(config.trustedPeerRequirement, QByteArrayLiteral("anchor apple"));
+        QCOMPARE(config.trustedPeerRequirement, requirement);
         QVERIFY(error.isEmpty());
 
-        QVERIFY(parseLaunchdMachServiceConfig(
-            QByteArrayLiteral("enabled=true\npeer-code-requirement=anchor apple"), &config,
-            &error));
+        QVERIFY(parseLaunchdMachServiceConfig(contents, &config, &error));
         QVERIFY(config.enabled);
-        QCOMPARE(config.trustedPeerRequirement, QByteArrayLiteral("anchor apple"));
+        QCOMPARE(config.trustedPeerRequirement, requirement);
     }
 
     void rejectsDisabledAndMissingOrMalformedConfig() {
@@ -41,6 +46,11 @@ class M6LaunchdMachServiceBootstrapTests final : public QObject {
         QVERIFY(disabledConfig.trustedPeerRequirement.isEmpty());
 
         const QList<QByteArray> malformed = {
+            QByteArrayLiteral("enabled=true\npeer-code-requirement=anchor apple\n"),
+            QByteArrayLiteral("enabled=true\npeer-code-requirement=cdhash H\"01234567\"\n"),
+            QByteArrayLiteral("enabled=true\npeer-code-requirement=cdhash "
+                              "H\"0123456789abcdef0123456789abcdef0123456g\"\n"),
+            "enabled=true\npeer-code-requirement=" + exactPeerRequirement() + " or anchor apple\n",
             QByteArrayLiteral("enabled=true\n"),
             QByteArrayLiteral("enabled=true\npeer-code-requirement=\n"),
             QByteArrayLiteral("enabled=true\npeer-code-requirement=anchor apple\n"
@@ -65,7 +75,11 @@ class M6LaunchdMachServiceBootstrapTests final : public QObject {
             LaunchdMachServiceConfig{},
             LaunchdMachServiceConfig{true, QByteArray()},
             LaunchdMachServiceConfig{true, QByteArrayLiteral("this is not a requirement !!!")},
-            LaunchdMachServiceConfig{false, QByteArrayLiteral("anchor apple")},
+            LaunchdMachServiceConfig{true, QByteArrayLiteral("anchor apple")},
+            LaunchdMachServiceConfig{true, exactPeerRequirement() + " or anchor apple"},
+            LaunchdMachServiceConfig{true, exactPeerRequirement() + " "},
+            LaunchdMachServiceConfig{true, exactPeerRequirement() + '\n'},
+            LaunchdMachServiceConfig{false, exactPeerRequirement()},
         };
 
         for (const LaunchdMachServiceConfig &config : invalidConfigs) {
@@ -85,7 +99,7 @@ class M6LaunchdMachServiceBootstrapTests final : public QObject {
     }
 
     void startsOnlyFixedServiceWithValidatedLocalRequirement() {
-        const LaunchdMachServiceConfig config{true, QByteArrayLiteral("anchor apple")};
+        const LaunchdMachServiceConfig config{true, exactPeerRequirement()};
         int starts = 0;
         QByteArray receivedServiceName;
         QByteArray receivedRequirement;
@@ -104,7 +118,7 @@ class M6LaunchdMachServiceBootstrapTests final : public QObject {
                  qPrintable(error));
         QCOMPARE(starts, 1);
         QCOMPARE(receivedServiceName, QByteArray(launchdMachServiceName));
-        QCOMPARE(receivedRequirement, QByteArrayLiteral("anchor apple"));
+        QCOMPARE(receivedRequirement, config.trustedPeerRequirement);
         QVERIFY(error.isEmpty());
     }
 
@@ -133,6 +147,11 @@ class M6LaunchdMachServiceBootstrapTests final : public QObject {
             },
             &error));
         QCOMPARE(starts, 0);
+    }
+
+  private:
+    static QByteArray exactPeerRequirement() {
+        return QByteArrayLiteral("cdhash H\"0123456789abcdef0123456789abcdef01234567\"");
     }
 };
 

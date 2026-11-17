@@ -22,13 +22,14 @@ struct XpcControlRequest {
 // message is borrowed and inspected synchronously.
 class XpcControlRequestGate final {
   public:
-    XpcControlRequestGate(QByteArray trustedRequirement, XpcPeerCodeSignaturePolicy &policy);
+    XpcControlRequestGate(std::string trustedRequirement, XpcPeerCodeSignaturePolicy &policy);
 
     bool isConfigured() const;
-    bool parse(xpc_object_t message, XpcControlRequest *request, QString *error = nullptr) const;
+    bool parse(xpc_object_t message, XpcControlRequest *request,
+               std::string *error = nullptr) const;
 
   private:
-    const QByteArray trustedRequirement_;
+    const std::string trustedRequirement_;
     XpcPeerCodeSignaturePolicy &policy_;
 };
 

@@ -124,9 +124,14 @@ if(Python3_Interpreter_FOUND)
         )
         set_tests_properties(m6_codesign_smoke PROPERTIES TIMEOUT 60)
 
+        set(helper_dependency_expectation)
+        if(INTERCEPTOR_SANITIZERS)
+            set(helper_dependency_expectation --expect-non-system-runtime)
+        endif()
         add_test(NAME m6_helper_package_codesign_smoke
             COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/test_m6_helper_package_codesign_smoke.py"
-                --helper "$<TARGET_FILE:llm_interceptor_helper>"
+                --helper "$<TARGET_FILE:llm_interceptor_read_only_helper>"
+                ${helper_dependency_expectation}
         )
         set_tests_properties(m6_helper_package_codesign_smoke PROPERTIES TIMEOUT 60)
     endif()
@@ -217,14 +222,14 @@ set_tests_properties(m6_unix_peer_credentials PROPERTIES TIMEOUT 30)
 qt_add_executable(m6_mach_service_peer_authenticator_tests
     M6MachServicePeerAuthenticatorTests.cpp)
 target_link_libraries(m6_mach_service_peer_authenticator_tests PRIVATE
-    interceptor_network Qt6::Test)
+    interceptor_read_only_xpc Qt6::Test)
 add_test(NAME m6_mach_service_peer_authenticator
     COMMAND m6_mach_service_peer_authenticator_tests)
 set_tests_properties(m6_mach_service_peer_authenticator PROPERTIES TIMEOUT 30)
 
 qt_add_executable(m6_xpc_control_request_gate_tests M6XpcControlRequestGateTests.cpp)
 target_link_libraries(m6_xpc_control_request_gate_tests PRIVATE
-    interceptor_network Qt6::Test)
+    interceptor_read_only_xpc Qt6::Test)
 add_test(NAME m6_xpc_control_request_gate
     COMMAND m6_xpc_control_request_gate_tests)
 set_tests_properties(m6_xpc_control_request_gate PROPERTIES TIMEOUT 30)
@@ -232,7 +237,7 @@ set_tests_properties(m6_xpc_control_request_gate PROPERTIES TIMEOUT 30)
 qt_add_executable(m6_xpc_read_only_service_listener_tests
     M6XpcReadOnlyServiceListenerTests.cpp)
 target_link_libraries(m6_xpc_read_only_service_listener_tests PRIVATE
-    interceptor_network Qt6::Test)
+    interceptor_read_only_xpc Qt6::Test)
 add_test(NAME m6_xpc_read_only_service_listener
     COMMAND m6_xpc_read_only_service_listener_tests)
 set_tests_properties(m6_xpc_read_only_service_listener PROPERTIES TIMEOUT 30)
@@ -248,7 +253,7 @@ set_tests_properties(m6_xpc_read_only_service_client PROPERTIES TIMEOUT 30)
 qt_add_executable(m6_launchd_mach_service_bootstrap_tests
     M6LaunchdMachServiceBootstrapTests.cpp)
 target_link_libraries(m6_launchd_mach_service_bootstrap_tests PRIVATE
-    interceptor_network Qt6::Test)
+    interceptor_read_only_xpc Qt6::Test)
 add_test(NAME m6_launchd_mach_service_bootstrap
     COMMAND m6_launchd_mach_service_bootstrap_tests)
 set_tests_properties(m6_launchd_mach_service_bootstrap PROPERTIES TIMEOUT 30)

@@ -1,11 +1,11 @@
 #include "HelperIdentity.hpp"
 
+#include "HelperStateDirectory.hpp"
 #include "LaunchdMachServiceBootstrap.hpp"
 
 #include <array>
 #include <cerrno>
 #include <fcntl.h>
-#include <sys/acl.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -37,14 +37,6 @@ class ScopedFd {
 
 HelperIdentity openFailure(int error) {
     return {error == ENOENT ? HelperIdentityStatus::Missing : HelperIdentityStatus::Invalid, {}};
-}
-
-bool hasNoExtendedAcl(int fd) {
-    const acl_t acl = ::acl_get_fd_np(fd, ACL_TYPE_EXTENDED);
-    if (!acl)
-        return errno == ENOENT;
-    ::acl_free(acl);
-    return false;
 }
 
 bool isTrustedDirectory(int fd, uid_t expectedOwner) {
@@ -85,7 +77,7 @@ HelperIdentity loadIdentityAt(int directoryFd, const char *filename, uid_t expec
     if (contents.endsWith('\n'))
         contents.chop(1);
     contents.remove(0, prefixLength);
-    if (!exactRequirementCompiles(contents))
+    if (!exactRequirementCompiles(std::string_view(contents)))
         return invalid;
     struct stat finalInfo{};
     if (::fstat(file.get(), &finalInfo) != 0 || size != info.st_size ||

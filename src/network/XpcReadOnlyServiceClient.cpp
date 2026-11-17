@@ -107,7 +107,7 @@ XpcReadOnlyClientResult XpcReadOnlyServiceClient::request(XpcReadOnlyClientOpera
         operation != XpcReadOnlyClientOperation::Status)
         return failed(XpcReadOnlyClientStatus::InvalidReply);
 
-    if (helperRequirement && !exactRequirementCompiles(*helperRequirement))
+    if (helperRequirement && !exactRequirementCompiles(std::string_view(*helperRequirement)))
         return failed(XpcReadOnlyClientStatus::InvalidPeerRequirement);
 
     xpc_connection_t connection = nullptr;

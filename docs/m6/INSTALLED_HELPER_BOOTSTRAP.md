@@ -1,12 +1,14 @@
 # Privileged helper bootstrap contract
 
-The build produces `llm_interceptor_helper`, a separate command-line executable. Its `--check-state-dir` mode performs a read-only state-directory check and exits. The `--process --state-dir PATH --bootstrap-fd FD` entrypoint validates the root-owned private directory, then deliberately exits with `production_peer_authenticator_unavailable` (code 5). It does not read the supplied descriptor, start a host, open a control socket, or mutate PF or ARP. Do not load it as a persistent launchd service or claim the installed-helper gate is met yet.
+The build produces `llm_interceptor_read_only_helper`, the system-library-only executable for the A3 launchd smoke. It shares the XPC listener, configuration parser and peer authentication code with the Qt application. Its `--check-state-dir` mode performs a read-only state-directory check and exits. Its Mach service entrypoint accepts the fixed state directory `/private/var/db/llm_interceptor` and runs the bounded `probe` and `status` protocol.
+
+The separate Qt-linked `llm_interceptor_helper` remains available for synthetic lifecycle development. Its `--process --state-dir PATH --bootstrap-fd FD` entrypoint validates the root-owned private directory, then exits with `production_peer_authenticator_unavailable` (code 5). It does not read the supplied descriptor, start a host, open a control socket, or mutate PF or ARP. Keep this Qt-linked build out of privileged service staging.
 
 `InstalledHelperProcessBootstrap::create` is the injectable process seam: it opens and retains the private state-directory descriptor, authenticates and receives the handoff on one connected Unix socket, derives kernel UID/GID credentials from that same socket, and calls `LeasedHelperHost::createFromBootstrap`. It exposes explicit host start and one-time credentials retrieval. Its injected operations factory is responsible for the mandatory fresh pre-mutation gate; the production executable does not instantiate this seam until a production authenticator and gated backend are available. The factory must wipe any secret copy it retains. The transferred snapshot cannot recheck GUI-owned listener readiness. This seam does not install a service, create the GUI/helper rendezvous, or provide a live backend.
 
 `MacXpcPeerCodeSignaturePolicy` asks Security.framework to resolve the sender from the message's kernel-associated audit token and validates the code against an explicit code requirement. `XpcControlRequestGate` pins a copy of that requirement at construction and authenticates each actual inbound message before parsing. It accepts only a single `operation` string with value `probe` or `status`. `XpcReadOnlyControlAdapter` returns fixed bounded probe/status replies, and `XpcReadOnlyServiceListener` provides a native event-listener foundation with peer and request limits.
 
-The helper also has an opt-in `--mach-service --state-dir PATH` mode. It remains root-gated and requires `mach-service.conf` inside the already validated root-owned `0700` state directory. The config file must be a root-owned regular file with exact mode `0600`, opened relative to the validated directory descriptor without following symlinks. Its strict format is exactly two ordered lines (an optional final newline is allowed):
+The opt-in Mach service requires `mach-service.conf` inside the validated root-owned `0700` state directory. The config file must be a root-owned regular file with exact mode `0600`, opened relative to the validated directory descriptor without following symlinks. The directory and config file must be free of extended ACLs. Its strict format is exactly two ordered lines (an optional final newline is allowed):
 
 ```text
 enabled=false
@@ -36,15 +38,17 @@ The non-installing package script checks the plist's exact keys and values, then
 ```sh
 python3 scripts/package_launchd_helper.py --validate-only
 python3 scripts/package_launchd_helper.py \
-  --helper build/debug/llm_interceptor_helper \
+  --helper build/debug/llm_interceptor_read_only_helper \
   --output-dir /private/tmp/llm-interceptor-launchd-review
 ```
 
 The helper input must be a non-empty regular file. Relative helper paths are interpreted from the current working directory. The staging directory must be an absolute, empty or new path outside macOS system locations. The helper and output paths must be disjoint, and both paths must be free of symlinks and `..` components. The script repeats these checks immediately before staging. Use a trusted local filesystem and avoid concurrent changes to either path during staging.
 
-The helper is staged with mode `0755` and the plist with mode `0644`, preserving their intended relative locations under `/Library`. The script does not sign, install, bootstrap, enable, unload, or remove a service. Review the staged files before any separately authorized installation work.
+The helper is staged as `Library/PrivilegedHelperTools/llm_interceptor_helper` with mode `0755`, preserving the name fixed in the plist. The plist is staged with mode `0644`. The script does not sign, install, bootstrap, enable, unload, or remove a service. Review the staged files before any separately authorized installation work.
 
 On macOS with Python 3, run `ctest --preset debug -R '^m6_helper_package_codesign_smoke$'` after building the debug preset. The smoke test requires a helper with a valid embedded signature and a literal cdhash designated requirement. Linker signing output can vary by architecture. The test stages the built helper in a temporary directory, checks its embedded signature with `codesign --verify --strict`, and reads the literal requirement from `codesign -d -r-`. It passes that requirement to `codesign --verify --strict -R` on the staged copy and checks that a different cdhash fails verification. This exercises signature integrity and exact requirement matching for the staged file. The test runs as an ordinary user and leaves the source files and system configuration untouched. The target Mac's signing and provisioning decisions are tracked in the [GUI/helper trust boundary](GUI_HELPER_TRUST_BOUNDARY.md).
+
+Debug and Release must pass the system dependency gate. The Sanitizer preset must fail that gate because its helper links the AddressSanitizer runtime. The signature and exact-pin checks still run for the sanitized artifact.
 
 Before installation, review the helper's signature and ownership and provision the exact signed GUI identity as described above. The [offline A3 preflight](GUI_HELPER_TRUST_BOUNDARY.md#offline-a3-preflight) verifies the staged package and signed GUI against the reviewed cdhashes. Apply the [helper runtime dependency gate](GUI_HELPER_TRUST_BOUNDARY.md#helper-runtime-dependency-gate) before any privilege elevation.
 

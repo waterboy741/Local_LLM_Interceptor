@@ -2,6 +2,9 @@
 
 #include <QtTest>
 
+#include <string>
+#include <string_view>
+
 #include <xpc/xpc.h>
 
 #include <atomic>
@@ -11,15 +14,15 @@ namespace interceptor {
 class M6XpcReadOnlyServiceListenerTestAccess final {
   public:
     static bool startWithAnonymousListener(XpcReadOnlyServiceListener &listener,
-                                           xpc_connection_t connection, QString *error) {
+                                           xpc_connection_t connection, std::string *error) {
         return listener.startWithAnonymousListenerForTesting(connection, error);
     }
 };
 
 class FakeCodeSignaturePolicy final : public XpcPeerCodeSignaturePolicy {
   public:
-    bool authenticate(xpc_object_t message, const QByteArray &expectedRequirement,
-                      QString *error) override {
+    bool authenticate(xpc_object_t message, std::string_view expectedRequirement,
+                      std::string *error) override {
         calls.fetch_add(1, std::memory_order_relaxed);
         lastMessage = message;
         lastRequirement = expectedRequirement;
@@ -30,8 +33,8 @@ class FakeCodeSignaturePolicy final : public XpcPeerCodeSignaturePolicy {
 
     std::atomic_int calls{0};
     xpc_object_t lastMessage = nullptr;
-    QByteArray lastRequirement;
-    QString errorText;
+    std::string lastRequirement;
+    std::string errorText;
     bool accepted = true;
 };
 
@@ -46,9 +49,9 @@ class M6XpcReadOnlyServiceListenerTests final : public QObject {
         return value;
     }
 
-    static QString valueString(xpc_object_t dictionary, const char *key) {
+    static std::string valueString(xpc_object_t dictionary, const char *key) {
         const char *value = xpc_dictionary_get_string(dictionary, key);
-        return value ? QString::fromUtf8(value) : QString();
+        return value ? std::string(value) : std::string();
     }
 
   private slots:
@@ -60,7 +63,7 @@ class M6XpcReadOnlyServiceListenerTests final : public QObject {
         QCOMPARE(xpc_dictionary_get_count(reply), 3ULL);
         QCOMPARE(xpc_get_type(xpc_dictionary_get_value(reply, "ok")), XPC_TYPE_BOOL);
         QVERIFY(xpc_dictionary_get_bool(reply, "ok"));
-        QCOMPARE(valueString(reply, "service"), QStringLiteral("llm_interceptor"));
+        QCOMPARE(valueString(reply, "service"), "llm_interceptor");
         QCOMPARE(xpc_get_type(xpc_dictionary_get_value(reply, "protocol_version")),
                  XPC_TYPE_UINT64);
         QCOMPARE(xpc_dictionary_get_uint64(reply, "protocol_version"), 1ULL);
@@ -73,9 +76,9 @@ class M6XpcReadOnlyServiceListenerTests final : public QObject {
         QVERIFY(reply != nullptr);
         QCOMPARE(xpc_dictionary_get_count(reply), 4ULL);
         QVERIFY(xpc_dictionary_get_bool(reply, "ok"));
-        QCOMPARE(valueString(reply, "service"), QStringLiteral("llm_interceptor"));
+        QCOMPARE(valueString(reply, "service"), "llm_interceptor");
         QCOMPARE(xpc_dictionary_get_uint64(reply, "protocol_version"), 1ULL);
-        QCOMPARE(valueString(reply, "state"), QStringLiteral("inactive"));
+        QCOMPARE(valueString(reply, "state"), "inactive");
         xpc_release(reply);
     }
 
@@ -87,8 +90,8 @@ class M6XpcReadOnlyServiceListenerTests final : public QObject {
     void adapterAuthenticatesAndRejectsUnauthenticatedMessagesWithoutReply() {
         FakeCodeSignaturePolicy policy;
         policy.accepted = false;
-        policy.errorText = QStringLiteral("xpc_peer_code_requirement_failed");
-        XpcControlRequestGate gate(QByteArrayLiteral("trusted requirement"), policy);
+        policy.errorText = "xpc_peer_code_requirement_failed";
+        XpcControlRequestGate gate("trusted requirement", policy);
         XpcReadOnlyControlAdapter adapter(gate);
         xpc_object_t request = message("probe");
         QVERIFY(request != nullptr);
@@ -96,13 +99,13 @@ class M6XpcReadOnlyServiceListenerTests final : public QObject {
         QCOMPARE(adapter.handleMessage(request), nullptr);
         QCOMPARE(policy.calls.load(std::memory_order_relaxed), 1);
         QCOMPARE(policy.lastMessage, request);
-        QCOMPARE(policy.lastRequirement, QByteArrayLiteral("trusted requirement"));
+        QCOMPARE(policy.lastRequirement, "trusted requirement");
         xpc_release(request);
     }
 
     void adapterAuthenticatesValidRequestBeforeReplyEncoding() {
         FakeCodeSignaturePolicy policy;
-        XpcControlRequestGate gate(QByteArrayLiteral("trusted requirement"), policy);
+        XpcControlRequestGate gate("trusted requirement", policy);
         XpcReadOnlyControlAdapter adapter(gate);
         xpc_object_t request = message("status");
         QVERIFY(request != nullptr);
@@ -117,7 +120,7 @@ class M6XpcReadOnlyServiceListenerTests final : public QObject {
 
     void adapterRejectsUnsupportedAndMalformedMessagesWithoutReply() {
         FakeCodeSignaturePolicy policy;
-        XpcControlRequestGate gate(QByteArrayLiteral("trusted requirement"), policy);
+        XpcControlRequestGate gate("trusted requirement", policy);
         XpcReadOnlyControlAdapter adapter(gate);
 
         xpc_object_t unsupported = message("Start");
@@ -141,23 +144,19 @@ class M6XpcReadOnlyServiceListenerTests final : public QObject {
 
     void listenerConfigurationFailuresStayStoppedAndStopIsIdempotent() {
         FakeCodeSignaturePolicy configuredPolicy;
-        XpcControlRequestGate configuredGate(QByteArrayLiteral("trusted"), configuredPolicy);
+        XpcControlRequestGate configuredGate("trusted", configuredPolicy);
         XpcReadOnlyControlAdapter configuredAdapter(configuredGate);
 
-        const QList<QByteArray> invalidNames = {
-            QByteArray(),
-            QByteArrayLiteral("invalid"),
-            QByteArrayLiteral(".org.example"),
-            QByteArrayLiteral("org.example."),
-            QByteArrayLiteral("org..example"),
-            QByteArrayLiteral("org/example.service"),
-            QByteArray(129, 'a'),
+        const QList<std::string> invalidNames = {
+            std::string(),         "invalid",      ".org.example",
+            "org.example.",        "org..example", "org/example.service",
+            std::string(129, 'a'),
         };
-        for (const QByteArray &name : invalidNames) {
+        for (const std::string &name : invalidNames) {
             XpcReadOnlyServiceListener invalidName(name, configuredAdapter);
-            QString error;
+            std::string error;
             QVERIFY(!invalidName.start(&error));
-            QCOMPARE(error, QStringLiteral("xpc_listener_service_name_invalid"));
+            QCOMPARE(error, "xpc_listener_service_name_invalid");
             QVERIFY(!invalidName.isRunning());
             invalidName.stop();
             invalidName.stop();
@@ -165,13 +164,12 @@ class M6XpcReadOnlyServiceListenerTests final : public QObject {
         }
 
         FakeCodeSignaturePolicy missingPolicy;
-        XpcControlRequestGate missingGate(QByteArray(), missingPolicy);
+        XpcControlRequestGate missingGate(std::string(), missingPolicy);
         XpcReadOnlyControlAdapter missingAdapter(missingGate);
-        XpcReadOnlyServiceListener missingRequirement(QByteArrayLiteral("org.example.interceptor"),
-                                                      missingAdapter);
-        QString error = QStringLiteral("stale");
+        XpcReadOnlyServiceListener missingRequirement("org.example.interceptor", missingAdapter);
+        std::string error = "stale";
         QVERIFY(!missingRequirement.start(&error));
-        QCOMPARE(error, QStringLiteral("xpc_listener_trusted_requirement_missing"));
+        QCOMPARE(error, "xpc_listener_trusted_requirement_missing");
         QVERIFY(!missingRequirement.isRunning());
         QCOMPARE(configuredPolicy.calls.load(std::memory_order_relaxed), 0);
         QCOMPARE(missingPolicy.calls.load(std::memory_order_relaxed), 0);
@@ -179,19 +177,19 @@ class M6XpcReadOnlyServiceListenerTests final : public QObject {
 
     void anonymousEndpointRoundTripsReadOnlyReplyAndStops() {
         FakeCodeSignaturePolicy policy;
-        XpcControlRequestGate gate(QByteArrayLiteral("trusted requirement"), policy);
+        XpcControlRequestGate gate("trusted requirement", policy);
         XpcReadOnlyControlAdapter adapter(gate);
-        XpcReadOnlyServiceListener listener(QByteArrayLiteral("org.example.interceptor"), adapter);
+        XpcReadOnlyServiceListener listener("org.example.interceptor", adapter);
 
         xpc_connection_t anonymousListener = xpc_connection_create(nullptr, nullptr);
         QVERIFY(anonymousListener != nullptr);
         xpc_endpoint_t endpoint = xpc_endpoint_create(anonymousListener);
         QVERIFY(endpoint != nullptr);
 
-        QString error;
+        std::string error;
         QVERIFY2(M6XpcReadOnlyServiceListenerTestAccess::startWithAnonymousListener(
                      listener, anonymousListener, &error),
-                 qPrintable(error));
+                 error.c_str());
         QVERIFY(listener.isRunning());
 
         xpc_connection_t client = xpc_connection_create_from_endpoint(endpoint);
@@ -201,17 +199,25 @@ class M6XpcReadOnlyServiceListenerTests final : public QObject {
                                          });
         xpc_connection_activate(client);
 
-        xpc_object_t request = message("probe");
-        QVERIFY(request != nullptr);
-        xpc_object_t reply = xpc_connection_send_message_with_reply_sync(client, request);
-        xpc_release(request);
-        QVERIFY2(reply != nullptr, "anonymous XPC endpoint did not return a reply");
-        QCOMPARE(xpc_get_type(reply), XPC_TYPE_DICTIONARY);
-        QVERIFY(xpc_dictionary_get_bool(reply, "ok"));
-        QCOMPARE(valueString(reply, "service"), QStringLiteral("llm_interceptor"));
-        QCOMPARE(xpc_dictionary_get_uint64(reply, "protocol_version"), 1ULL);
-        QCOMPARE(policy.calls.load(std::memory_order_relaxed), 1);
-        xpc_release(reply);
+        for (const std::string_view operation : {"probe", "status"}) {
+            xpc_object_t request = message(operation.data());
+            QVERIFY(request != nullptr);
+            xpc_object_t reply = xpc_connection_send_message_with_reply_sync(client, request);
+            xpc_release(request);
+            QVERIFY2(reply != nullptr, "anonymous XPC endpoint did not return a reply");
+            QCOMPARE(xpc_get_type(reply), XPC_TYPE_DICTIONARY);
+            QVERIFY(xpc_dictionary_get_bool(reply, "ok"));
+            QCOMPARE(valueString(reply, "service"), "llm_interceptor");
+            QCOMPARE(xpc_dictionary_get_uint64(reply, "protocol_version"), 1ULL);
+            if (operation == "status") {
+                QCOMPARE(xpc_dictionary_get_count(reply), 4ULL);
+                QCOMPARE(valueString(reply, "state"), "inactive");
+            } else {
+                QCOMPARE(xpc_dictionary_get_count(reply), 3ULL);
+            }
+            xpc_release(reply);
+        }
+        QCOMPARE(policy.calls.load(std::memory_order_relaxed), 2);
 
         listener.stop();
         QVERIFY(!listener.isRunning());

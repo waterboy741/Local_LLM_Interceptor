@@ -4,7 +4,7 @@ This document narrows package A of the [M6 implementation backlog](IMPLEMENTATIO
 
 ## What exists today
 
-- `src/installed_helper_main.cpp` can launch a root-gated Mach service with only `probe` and `status`. Its separate `--process` entrypoint deliberately exits with `production_peer_authenticator_unavailable`.
+- `llm_interceptor_read_only_helper` can launch a root-gated Mach service with only `probe` and `status`. It links only Apple system libraries. The Qt-linked synthetic helper's separate `--process` entrypoint deliberately exits with `production_peer_authenticator_unavailable`.
 - `src/network/LaunchdMachServiceBootstrap.cpp` reads an opt-in, root-owned config. An enabled config accepts only one exact, locally compilable GUI cdhash requirement. The checked-in example is disabled.
 - `src/network/MachServicePeerAuthenticator.cpp` checks the signed identity of an incoming XPC message before `XpcControlRequestGate` parses its operation.
 - `src/network/XpcReadOnlyServiceClient.cpp` enforces a bounded wait and exact reply shape. `src/gui/MainWindow.cpp` runs the status call off the GUI thread and discards stale results after a session clear.
@@ -63,7 +63,7 @@ python3 scripts/preflight_helper_dependencies.py \
 
 The checker inspects the Mach-O load commands in every architecture reported by `otool`. It requires the Apple system dynamic linker, rejects runtime search paths and embedded dyld environment overrides, and accepts only absolute library names under `/System/Library/` or `/usr/lib/`. A pass covers these static load commands. Review build provenance and any other runtime code loading, such as plugins or explicit `dlopen` calls, separately before running as root. Perform these checks on a trusted macOS installation and an unchanged review copy.
 
-**Stop if the dependency check fails.** The current Homebrew-linked helper references QtCore and QtNetwork under `/opt/homebrew/opt/qtbase` and declares an `LC_RPATH` under `/opt/homebrew/lib`. On the review Mac, those paths are under an ordinary user's package-manager installation. Copying the helper to a root-owned directory and pinning its cdhash leaves those dependencies in place. The installed smoke remains blocked until an eligible helper build is reviewed. Any proposal to use external dependencies would need separate review of the complete runtime dependency set and the ownership and write permissions of its files, directories, symlinks, and resolved targets.
+**Stop if the dependency check fails.** Stage `build/debug/llm_interceptor_read_only_helper` for this smoke. The Qt-linked synthetic build references libraries under `/opt/homebrew/opt/qtbase` and declares an `LC_RPATH` under `/opt/homebrew/lib`; on the review Mac those paths are under an ordinary user's package-manager installation. An offline `macdeployqt` prototype contained all Mach-O load paths and passed strict recursive signature verification after rewrites, but its OpenSSL libraries still embedded Homebrew configuration and provider defaults. Using external dependencies in the privileged process would require separate review of the full runtime dependency set and its ownership and permissions.
 
 ### Installation decisions
 

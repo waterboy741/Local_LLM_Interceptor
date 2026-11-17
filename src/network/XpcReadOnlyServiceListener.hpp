@@ -5,8 +5,8 @@
 #include <dispatch/dispatch.h>
 #include <xpc/xpc.h>
 
-#include <QByteArray>
-#include <QString>
+#include <string>
+#include <string_view>
 
 #include <atomic>
 #include <memory>
@@ -34,13 +34,13 @@ class XpcReadOnlyControlAdapter final {
 // class never installs a plist or registers a service itself.
 class XpcReadOnlyServiceListener final {
   public:
-    XpcReadOnlyServiceListener(QByteArray serviceName, XpcReadOnlyControlAdapter &adapter);
+    XpcReadOnlyServiceListener(std::string serviceName, XpcReadOnlyControlAdapter &adapter);
     ~XpcReadOnlyServiceListener();
 
     XpcReadOnlyServiceListener(const XpcReadOnlyServiceListener &) = delete;
     XpcReadOnlyServiceListener &operator=(const XpcReadOnlyServiceListener &) = delete;
 
-    bool start(QString *error = nullptr);
+    bool start(std::string *error = nullptr);
     void stop();
     bool isRunning() const;
 
@@ -56,11 +56,11 @@ class XpcReadOnlyServiceListener final {
     void acceptConnection(xpc_connection_t connection);
     void handleEvent(xpc_connection_t connection, xpc_object_t event);
     // Test-only seam. Consumes the listener's +1 reference on every path.
-    bool startWithAnonymousListenerForTesting(xpc_connection_t listener, QString *error);
+    bool startWithAnonymousListenerForTesting(xpc_connection_t listener, std::string *error);
     void installListenerOnQueue();
     void stopOnQueue();
 
-    const QByteArray serviceName_;
+    const std::string serviceName_;
     XpcReadOnlyControlAdapter &adapter_;
     dispatch_queue_t queue_ = nullptr;
     xpc_connection_t listener_ = nullptr;

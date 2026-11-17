@@ -1,10 +1,10 @@
 #include "LaunchdMachServiceBootstrap.hpp"
 
+#include "HelperStateDirectory.hpp"
+
 #include <Security/SecRequirement.h>
 
-#include <QList>
-#include <QRegularExpression>
-
+#include <algorithm>
 #include <cerrno>
 #include <fcntl.h>
 #include <sys/stat.h>
@@ -12,32 +12,30 @@
 
 namespace interceptor {
 namespace {
-constexpr qsizetype maximumConfigLength = 4096;
-constexpr qsizetype maximumRequirementLength = 1024;
+constexpr size_t maximumConfigLength = 4096;
+constexpr size_t maximumRequirementLength = 1024;
 
-bool fail(QString *error, const char *reason) {
+bool fail(std::string *error, const char *reason) {
     if (error)
-        *error = QString::fromLatin1(reason);
+        *error = reason;
     return false;
 }
 
-bool validRequirement(const QByteArray &requirement) {
-    if (requirement.isEmpty() || requirement.size() > maximumRequirementLength ||
-        requirement.contains('\0'))
+bool validRequirement(std::string_view requirement) {
+    if (requirement.empty() || requirement.size() > maximumRequirementLength ||
+        requirement.find('\0') != std::string_view::npos)
         return false;
     for (const unsigned char value : requirement) {
         if (value < 0x20 || value == 0x7f)
             return false;
     }
-    return QString::fromUtf8(requirement).toUtf8() == requirement;
+    return true;
 }
 
-bool requirementCompiles(const QByteArray &requirement) {
-    const QString text = QString::fromUtf8(requirement);
-    const QByteArray utf8 = text.toUtf8();
+bool requirementCompiles(std::string_view requirement) {
     CFStringRef requirementText = CFStringCreateWithBytes(
-        kCFAllocatorDefault, reinterpret_cast<const UInt8 *>(utf8.constData()),
-        static_cast<CFIndex>(utf8.size()), kCFStringEncodingUTF8, false);
+        kCFAllocatorDefault, reinterpret_cast<const UInt8 *>(requirement.data()),
+        static_cast<CFIndex>(requirement.size()), kCFStringEncodingUTF8, false);
     if (!requirementText)
         return false;
     SecRequirementRef compiled = nullptr;
@@ -52,38 +50,47 @@ bool requirementCompiles(const QByteArray &requirement) {
 
 } // namespace
 
-bool exactRequirementCompiles(const QByteArray &requirement) {
-    constexpr qsizetype literalOverhead = sizeof("cdhash H\"\"") - 1;
-    if (requirement.size() != literalOverhead + 40 && requirement.size() != literalOverhead + 64)
+bool exactRequirementCompiles(std::string_view requirement) {
+    constexpr std::string_view prefix = "cdhash H\"";
+    constexpr size_t overhead = prefix.size() + 1;
+    if ((requirement.size() != overhead + 40 && requirement.size() != overhead + 64) ||
+        !requirement.starts_with(prefix) || !requirement.ends_with('"'))
         return false;
-    static const QRegularExpression literal(QStringLiteral(
-        R"requirement(\Acdhash H"(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})"\z)requirement"));
-    return literal.match(QString::fromLatin1(requirement)).hasMatch() &&
+    const auto hash = requirement.substr(prefix.size(), requirement.size() - overhead);
+    return std::ranges::all_of(hash,
+                               [](char value) {
+                                   return (value >= '0' && value <= '9') ||
+                                          (value >= 'a' && value <= 'f') ||
+                                          (value >= 'A' && value <= 'F');
+                               }) &&
            requirementCompiles(requirement);
 }
 
-bool parseLaunchdMachServiceConfig(const QByteArray &contents, LaunchdMachServiceConfig *config,
-                                   QString *error) {
+bool parseLaunchdMachServiceConfig(std::string_view contents, LaunchdMachServiceConfig *config,
+                                   std::string *error) {
     if (error)
         error->clear();
     if (!config)
         return fail(error, "launchd_mach_service_config_output_invalid");
     *config = LaunchdMachServiceConfig{};
-    if (contents.isEmpty() || contents.size() > maximumConfigLength || contents.contains('\0') ||
-        contents.contains('\r'))
+    if (contents.empty() || contents.size() > maximumConfigLength ||
+        contents.find('\0') != std::string_view::npos ||
+        contents.find('\r') != std::string_view::npos)
         return fail(error, "launchd_mach_service_config_format_invalid");
 
-    QByteArray normalized = contents;
-    if (normalized.endsWith('\n'))
-        normalized.chop(1);
-    const QList<QByteArray> lines = normalized.split('\n');
-    if (lines.size() != 2 || !lines.at(0).startsWith("enabled=") ||
-        !lines.at(1).startsWith("peer-code-requirement=") ||
-        (lines.at(0) != "enabled=true" && lines.at(0) != "enabled=false"))
+    if (contents.ends_with('\n'))
+        contents.remove_suffix(1);
+    const auto newline = contents.find('\n');
+    if (newline == std::string_view::npos)
         return fail(error, "launchd_mach_service_config_format_invalid");
-
-    const QByteArray requirement = lines.at(1).mid(sizeof("peer-code-requirement=") - 1);
-    const bool enabled = lines.at(0) == "enabled=true";
+    const auto setting = contents.substr(0, newline);
+    auto requirement = contents.substr(newline + 1);
+    constexpr std::string_view key = "peer-code-requirement=";
+    if ((setting != "enabled=true" && setting != "enabled=false") ||
+        !requirement.starts_with(key) || requirement.find('\n') != std::string_view::npos)
+        return fail(error, "launchd_mach_service_config_format_invalid");
+    requirement.remove_prefix(key.size());
+    const bool enabled = setting == "enabled=true";
     const bool valid = enabled ? exactRequirementCompiles(requirement)
                                : validRequirement(requirement) && requirementCompiles(requirement);
     if (!valid)
@@ -97,7 +104,7 @@ bool parseLaunchdMachServiceConfig(const QByteArray &contents, LaunchdMachServic
 }
 
 bool loadLaunchdMachServiceConfig(int stateDirectoryFd, LaunchdMachServiceConfig *config,
-                                  QString *error) {
+                                  std::string *error) {
     if (error)
         error->clear();
     if (!config)
@@ -114,15 +121,16 @@ bool loadLaunchdMachServiceConfig(int stateDirectoryFd, LaunchdMachServiceConfig
     const int descriptorFlags = ::fcntl(fd, F_GETFD);
     const bool safe = ::fstat(fd, &info) == 0 && S_ISREG(info.st_mode) && info.st_uid == 0 &&
                       (info.st_mode & 07777) == 0600 && info.st_nlink == 1 && info.st_size > 0 &&
-                      info.st_size <= maximumConfigLength && descriptorFlags >= 0 &&
-                      (descriptorFlags & FD_CLOEXEC) != 0;
+                      info.st_size <= static_cast<off_t>(maximumConfigLength) &&
+                      descriptorFlags >= 0 && (descriptorFlags & FD_CLOEXEC) != 0 &&
+                      hasNoExtendedAcl(fd);
     if (!safe) {
         ::close(fd);
         return fail(error, "launchd_mach_service_config_file_unsafe");
     }
 
-    QByteArray contents;
-    contents.reserve(static_cast<qsizetype>(info.st_size));
+    std::string contents;
+    contents.reserve(static_cast<size_t>(info.st_size));
     char buffer[512];
     bool readOk = true;
     while (true) {
@@ -135,20 +143,20 @@ bool loadLaunchdMachServiceConfig(int stateDirectoryFd, LaunchdMachServiceConfig
             readOk = false;
             break;
         }
-        if (contents.size() + count > maximumConfigLength) {
+        if (contents.size() + static_cast<size_t>(count) > maximumConfigLength) {
             readOk = false;
             break;
         }
-        contents.append(buffer, static_cast<qsizetype>(count));
+        contents.append(buffer, static_cast<size_t>(count));
     }
     ::close(fd);
-    if (!readOk || contents.size() != info.st_size)
+    if (!readOk || contents.size() != static_cast<size_t>(info.st_size))
         return fail(error, "launchd_mach_service_config_read_failed");
     return parseLaunchdMachServiceConfig(contents, config, error);
 }
 
 bool startConfiguredLaunchdMachService(const LaunchdMachServiceConfig &config,
-                                       const LaunchdMachServiceStart &start, QString *error) {
+                                       const LaunchdMachServiceStart &start, std::string *error) {
     if (error)
         error->clear();
     if (!config.enabled)
@@ -158,12 +166,12 @@ bool startConfiguredLaunchdMachService(const LaunchdMachServiceConfig &config,
     if (!start)
         return fail(error, "launchd_mach_service_start_unavailable");
     try {
-        if (start(QByteArray(launchdMachServiceName), config.trustedPeerRequirement, error))
+        if (start(launchdMachServiceName, config.trustedPeerRequirement, error))
             return true;
     } catch (...) {
     }
-    if (error && error->isEmpty())
-        *error = QStringLiteral("launchd_mach_service_start_failed");
+    if (error && error->empty())
+        *error = "launchd_mach_service_start_failed";
     return false;
 }
 

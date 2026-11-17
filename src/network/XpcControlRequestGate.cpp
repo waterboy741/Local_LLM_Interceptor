@@ -1,33 +1,32 @@
 #include "XpcControlRequestGate.hpp"
 
-#include <cstring>
+#include <string_view>
 #include <utility>
 
 namespace interceptor {
 namespace {
 constexpr size_t maximumOperationLength = 16;
-constexpr qsizetype maximumRequirementLength = 1024;
+constexpr size_t maximumRequirementLength = 1024;
 
-bool fail(QString *error, const char *reason) {
+bool fail(std::string *error, const char *reason) {
     if (error)
-        *error = QString::fromLatin1(reason);
+        *error = reason;
     return false;
 }
 
 } // namespace
 
-XpcControlRequestGate::XpcControlRequestGate(QByteArray trustedRequirement,
+XpcControlRequestGate::XpcControlRequestGate(std::string trustedRequirement,
                                              XpcPeerCodeSignaturePolicy &policy)
     : trustedRequirement_(std::move(trustedRequirement)), policy_(policy) {}
 
 bool XpcControlRequestGate::isConfigured() const {
-    return !trustedRequirement_.isEmpty() &&
-           trustedRequirement_.size() <= maximumRequirementLength &&
-           !trustedRequirement_.contains('\0');
+    return !trustedRequirement_.empty() && trustedRequirement_.size() <= maximumRequirementLength &&
+           trustedRequirement_.find('\0') == std::string::npos;
 }
 
 bool XpcControlRequestGate::parse(xpc_object_t message, XpcControlRequest *request,
-                                  QString *error) const {
+                                  std::string *error) const {
     if (error)
         error->clear();
     if (request)
@@ -52,9 +51,10 @@ bool XpcControlRequestGate::parse(xpc_object_t message, XpcControlRequest *reque
     if (!operation)
         return fail(error, "xpc_control_request_operation_invalid");
 
-    if (std::strcmp(operation, "probe") == 0)
+    const std::string_view value(operation, operationLength);
+    if (value == "probe")
         request->operation = XpcControlOperation::Probe;
-    else if (std::strcmp(operation, "status") == 0)
+    else if (value == "status")
         request->operation = XpcControlOperation::Status;
     else
         return fail(error, "xpc_control_request_operation_unsupported");

@@ -216,7 +216,7 @@ CodesignCommandResult runWithRunner(const QStringList &arguments, CodesignComman
     }
     const QString expectedExecutable = appPath + QStringLiteral("/Contents/MacOS/llm_interceptor");
     const QString requirement = cdhashRequirement(combined, expectedExecutable);
-    if (requirement.isEmpty() || !exactRequirementCompiles(requirement.toUtf8()))
+    if (requirement.isEmpty() || !exactRequirementCompiles(std::string_view(requirement.toUtf8())))
         return failure(1, QStringLiteral("exact_cdhash_requirement_unavailable"));
 
     const auto verifyRequirement =

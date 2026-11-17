@@ -67,10 +67,11 @@ int main(int argc, char *argv[]) {
         return 5;
     }
     if (requestingMachService) {
+        std::string launchdFailure;
         interceptor::LaunchdMachServiceConfig config;
         if (!interceptor::loadLaunchdMachServiceConfig(directory->descriptor(), &config,
-                                                       &failure)) {
-            err << failure << '\n';
+                                                       &launchdFailure)) {
+            err << QString::fromStdString(launchdFailure) << '\n';
             return 6;
         }
 
@@ -80,18 +81,18 @@ int main(int argc, char *argv[]) {
         std::unique_ptr<interceptor::XpcReadOnlyServiceListener> listener;
         const bool started = interceptor::startConfiguredLaunchdMachService(
             config,
-            [&](const QByteArray &serviceName, const QByteArray &trustedRequirement,
-                QString *startError) {
-                gate = std::make_unique<interceptor::XpcControlRequestGate>(trustedRequirement,
-                                                                            peerPolicy);
+            [&](std::string_view serviceName, std::string_view trustedRequirement,
+                std::string *startError) {
+                gate = std::make_unique<interceptor::XpcControlRequestGate>(
+                    std::string(trustedRequirement), peerPolicy);
                 adapter = std::make_unique<interceptor::XpcReadOnlyControlAdapter>(*gate);
-                listener = std::make_unique<interceptor::XpcReadOnlyServiceListener>(serviceName,
-                                                                                     *adapter);
+                listener = std::make_unique<interceptor::XpcReadOnlyServiceListener>(
+                    std::string(serviceName), *adapter);
                 return listener->start(startError);
             },
-            &failure);
+            &launchdFailure);
         if (!started) {
-            err << failure << '\n';
+            err << QString::fromStdString(launchdFailure) << '\n';
             return 7;
         }
         return app.exec();

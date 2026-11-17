@@ -5,15 +5,15 @@
 
 namespace interceptor {
 namespace {
-constexpr qsizetype maximumServiceNameLength = 128;
+constexpr size_t maximumServiceNameLength = 128;
 constexpr size_t maximumPeerConnections = 16;
 constexpr size_t maximumMessagesPerPeer = 128;
 constexpr size_t maximumAcceptedPeers = 256;
 constexpr size_t maximumMessagesPerRun = 4096;
 
-bool fail(QString *error, const char *reason) {
+bool fail(std::string *error, const char *reason) {
     if (error)
-        *error = QString::fromLatin1(reason);
+        *error = reason;
     return false;
 }
 
@@ -23,9 +23,9 @@ void cancelAndRelease(xpc_connection_t connection) {
     xpc_release(connection);
 }
 
-bool validServiceName(const QByteArray &name) {
-    if (name.isEmpty() || name.size() > maximumServiceNameLength || name.startsWith('.') ||
-        name.endsWith('.') || !name.contains('.'))
+bool validServiceName(std::string_view name) {
+    if (name.empty() || name.size() > maximumServiceNameLength || name.starts_with('.') ||
+        name.ends_with('.') || name.find('.') == std::string_view::npos)
         return false;
 
     bool previousWasDot = true;
@@ -40,7 +40,7 @@ bool validServiceName(const QByteArray &name) {
             return false;
         previousWasDot = isDot;
     }
-    return !previousWasDot && !name.contains('\0');
+    return !previousWasDot && name.find('\0') == std::string_view::npos;
 }
 
 } // namespace
@@ -89,7 +89,7 @@ xpc_object_t XpcReadOnlyControlAdapter::handleMessage(xpc_object_t message) cons
     return reply;
 }
 
-XpcReadOnlyServiceListener::XpcReadOnlyServiceListener(QByteArray serviceName,
+XpcReadOnlyServiceListener::XpcReadOnlyServiceListener(std::string serviceName,
                                                        XpcReadOnlyControlAdapter &adapter)
     : serviceName_(std::move(serviceName)), adapter_(adapter),
       queue_(
@@ -109,7 +109,7 @@ XpcReadOnlyServiceListener::~XpcReadOnlyServiceListener() {
     }
 }
 
-bool XpcReadOnlyServiceListener::start(QString *error) {
+bool XpcReadOnlyServiceListener::start(std::string *error) {
     if (error)
         error->clear();
     if (!queue_)
@@ -120,7 +120,6 @@ bool XpcReadOnlyServiceListener::start(QString *error) {
         return fail(error, "xpc_listener_trusted_requirement_missing");
 
     __block bool started = false;
-    __block QString startError;
     dispatch_sync(queue_, ^{
       if (running_) {
           started = true;
@@ -129,26 +128,20 @@ bool XpcReadOnlyServiceListener::start(QString *error) {
       peersAccepted_ = 0;
       messagesReceived_ = 0;
 
-      const std::string service(serviceName_.constData(), static_cast<size_t>(serviceName_.size()));
-      listener_ = xpc_connection_create_mach_service(service.c_str(), queue_,
+      listener_ = xpc_connection_create_mach_service(serviceName_.c_str(), queue_,
                                                      XPC_CONNECTION_MACH_SERVICE_LISTENER);
-      if (!listener_) {
-          startError = QStringLiteral("xpc_listener_create_failed");
+      if (!listener_)
           return;
-      }
       installListenerOnQueue();
       running_ = true;
       started = true;
     });
 
-    if (!started)
-        return fail(error, startError.isEmpty() ? "xpc_listener_create_failed"
-                                                : startError.toUtf8().constData());
-    return true;
+    return started || fail(error, "xpc_listener_create_failed");
 }
 
 bool XpcReadOnlyServiceListener::startWithAnonymousListenerForTesting(xpc_connection_t listener,
-                                                                      QString *error) {
+                                                                      std::string *error) {
     if (error)
         error->clear();
     if (!listener)

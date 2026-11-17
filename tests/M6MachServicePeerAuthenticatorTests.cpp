@@ -2,14 +2,17 @@
 
 #include <QtTest>
 
+#include <string>
+#include <string_view>
+
 #include <xpc/xpc.h>
 
 namespace interceptor {
 
 class FakeCodeSignaturePolicy final : public XpcPeerCodeSignaturePolicy {
   public:
-    bool authenticate(xpc_object_t message, const QByteArray &expectedRequirement,
-                      QString *error) override {
+    bool authenticate(xpc_object_t message, std::string_view expectedRequirement,
+                      std::string *error) override {
         ++calls;
         seenMessage = message;
         seenRequirement = expectedRequirement;
@@ -22,8 +25,8 @@ class FakeCodeSignaturePolicy final : public XpcPeerCodeSignaturePolicy {
 
     int calls = 0;
     xpc_object_t seenMessage = nullptr;
-    QByteArray seenRequirement;
-    QString policyError;
+    std::string seenRequirement;
+    std::string policyError;
     bool result = true;
     bool throws = false;
 };
@@ -34,18 +37,16 @@ class M6MachServicePeerAuthenticatorTests final : public QObject {
   private slots:
     void rejectsNullAndNonDictionaryMessagesBeforeCallingPolicy() {
         FakeCodeSignaturePolicy policy;
-        QString error = QStringLiteral("stale");
+        std::string error = "stale";
 
-        QVERIFY(!authenticateXpcPeerMessage(nullptr, QByteArrayLiteral("trusted requirement"),
-                                            policy, &error));
-        QCOMPARE(error, QStringLiteral("xpc_peer_message_invalid"));
+        QVERIFY(!authenticateXpcPeerMessage(nullptr, "trusted requirement", policy, &error));
+        QCOMPARE(error, "xpc_peer_message_invalid");
         QCOMPARE(policy.calls, 0);
 
         xpc_object_t stringMessage = xpc_string_create("not a dictionary");
         QVERIFY(stringMessage != nullptr);
-        QVERIFY(!authenticateXpcPeerMessage(stringMessage, QByteArrayLiteral("trusted requirement"),
-                                            policy, &error));
-        QCOMPARE(error, QStringLiteral("xpc_peer_message_invalid"));
+        QVERIFY(!authenticateXpcPeerMessage(stringMessage, "trusted requirement", policy, &error));
+        QCOMPARE(error, "xpc_peer_message_invalid");
         QCOMPARE(policy.calls, 0);
         xpc_release(stringMessage);
     }
@@ -54,18 +55,18 @@ class M6MachServicePeerAuthenticatorTests final : public QObject {
         xpc_object_t message = xpc_dictionary_create(nullptr, nullptr, 0);
         QVERIFY(message != nullptr);
         FakeCodeSignaturePolicy policy;
-        QString error;
+        std::string error;
 
-        const QByteArray oversized(1025, 'x');
-        const QByteArray embeddedNul("valid\0suffix", 12);
-        const QList<QByteArray> invalidRequirements = {
-            QByteArray(),
+        const std::string oversized(1025, 'x');
+        const std::string embeddedNul("valid\0suffix", 12);
+        const QList<std::string> invalidRequirements = {
+            std::string(),
             oversized,
             embeddedNul,
         };
-        for (const QByteArray &requirement : invalidRequirements) {
+        for (const std::string &requirement : invalidRequirements) {
             QVERIFY(!authenticateXpcPeerMessage(message, requirement, policy, &error));
-            QCOMPARE(error, QStringLiteral("xpc_peer_requirement_invalid"));
+            QCOMPARE(error, "xpc_peer_requirement_invalid");
             QCOMPARE(policy.calls, 0);
         }
         xpc_release(message);
@@ -75,13 +76,13 @@ class M6MachServicePeerAuthenticatorTests final : public QObject {
         xpc_object_t message = xpc_dictionary_create(nullptr, nullptr, 0);
         QVERIFY(message != nullptr);
         xpc_dictionary_set_string(message, "requirement", "attacker-controlled-value");
-        const QByteArray trustedRequirement = QByteArrayLiteral(
-            "anchor apple generic and identifier \"edu.example.llm-interceptor.helper\"");
+        const std::string trustedRequirement =
+            "anchor apple generic and identifier \"edu.example.llm-interceptor.helper\"";
         FakeCodeSignaturePolicy policy;
-        QString error = QStringLiteral("stale");
+        std::string error = "stale";
 
         QVERIFY(authenticateXpcPeerMessage(message, trustedRequirement, policy, &error));
-        QCOMPARE(error, QString());
+        QCOMPARE(error, std::string());
         QCOMPARE(policy.calls, 1);
         QCOMPARE(policy.seenMessage, message);
         QCOMPARE(policy.seenRequirement, trustedRequirement);
@@ -93,15 +94,15 @@ class M6MachServicePeerAuthenticatorTests final : public QObject {
         QVERIFY(message != nullptr);
         FakeCodeSignaturePolicy policy;
         policy.result = false;
-        policy.policyError = QStringLiteral("signature_requirement_rejected");
-        QString error;
+        policy.policyError = "signature_requirement_rejected";
+        std::string error;
 
-        QVERIFY(!authenticateXpcPeerMessage(message, QByteArrayLiteral("trusted"), policy, &error));
-        QCOMPARE(error, QStringLiteral("signature_requirement_rejected"));
+        QVERIFY(!authenticateXpcPeerMessage(message, "trusted", policy, &error));
+        QCOMPARE(error, "signature_requirement_rejected");
 
         policy.policyError.clear();
-        QVERIFY(!authenticateXpcPeerMessage(message, QByteArrayLiteral("trusted"), policy, &error));
-        QCOMPARE(error, QStringLiteral("xpc_peer_code_requirement_failed"));
+        QVERIFY(!authenticateXpcPeerMessage(message, "trusted", policy, &error));
+        QCOMPARE(error, "xpc_peer_code_requirement_failed");
         xpc_release(message);
     }
 
@@ -110,10 +111,10 @@ class M6MachServicePeerAuthenticatorTests final : public QObject {
         QVERIFY(message != nullptr);
         FakeCodeSignaturePolicy policy;
         policy.throws = true;
-        QString error;
+        std::string error;
 
-        QVERIFY(!authenticateXpcPeerMessage(message, QByteArrayLiteral("trusted"), policy, &error));
-        QCOMPARE(error, QStringLiteral("xpc_peer_code_requirement_failed"));
+        QVERIFY(!authenticateXpcPeerMessage(message, "trusted", policy, &error));
+        QCOMPARE(error, "xpc_peer_code_requirement_failed");
         QCOMPARE(policy.calls, 1);
         xpc_release(message);
     }

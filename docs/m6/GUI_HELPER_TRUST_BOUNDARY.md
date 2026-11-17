@@ -36,6 +36,24 @@ Use anonymous XPC endpoints for deterministic malformed-message and timeout case
 
 ## Decisions to record before installation
 
+### Offline A3 preflight
+
+Stage the signed GUI and helper package using the procedures in the [helper bootstrap contract](INSTALLED_HELPER_BOOTSTRAP.md). Use the separately signed review GUI bundle and review its disabled identity proposal. Review the signed helper's exact cdhash separately. Supply both reviewed hexadecimal values without the surrounding `cdhash H"…"` syntax.
+
+```sh
+python3 scripts/preflight_launchd_helper.py \
+  --staged-root /absolute/path/to/helper-review \
+  --app /absolute/path/to/gui-review/llm_interceptor.app \
+  --gui-cdhash "$reviewed_gui_cdhash" \
+  --helper-cdhash "$reviewed_helper_cdhash"
+```
+
+The preflight checks the fixed staged helper and plist paths, file modes, and launchd configuration. It uses macOS code-signature verification to check each artifact against its reviewed cdhash, including the GUI bundle's nested code. Run it on trusted local staging directories that will stay unchanged during verification. A successful check prints `a3_offline_preflight_passed` followed by two separate proposals for review. The `enabled=false` and `peer-code-requirement` lines belong to the helper's GUI policy. The `helper-code-requirement` line belongs to the GUI's helper identity file. These are stdout proposals only.
+
+The installed A3 smoke remains pending after preflight. It requires separately authorized provisioning on the target Mac and evidence of a successful ordinary-GUI status request, wrong-build rejection in both directions, and clean service removal.
+
+### Installation decisions
+
 - Exact helper signing method for the target Mac and review of the resulting cdhash before it is provisioned in the fixed identity file.
 - GUI signing method and whether a local ad-hoc identity is acceptable for the research installation. Rebuilding or re-signing changes a pinned cdhash.
 - Service domain, upgrade behavior, and uninstall order. The review package currently supplies a launchd artifact but no supported installer.

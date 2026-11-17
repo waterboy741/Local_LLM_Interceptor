@@ -110,6 +110,12 @@ if(Python3_Interpreter_FOUND)
     )
     set_tests_properties(m6_launchd_helper_preflight PROPERTIES TIMEOUT 60)
 
+    add_test(NAME m6_helper_dependency_preflight
+        COMMAND "${Python3_EXECUTABLE}" -B -m unittest discover
+            -s "${CMAKE_CURRENT_SOURCE_DIR}" -p test_preflight_helper_dependencies.py -v
+    )
+    set_tests_properties(m6_helper_dependency_preflight PROPERTIES TIMEOUT 60)
+
     if(APPLE)
         add_test(NAME m6_codesign_smoke
             COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/test_m6_codesign_smoke.py"

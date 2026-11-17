@@ -52,6 +52,19 @@ The preflight checks the fixed staged helper and plist paths, file modes, and la
 
 The installed A3 smoke remains pending after preflight. It requires separately authorized provisioning on the target Mac and evidence of a successful ordinary-GUI status request, wrong-build rejection in both directions, and clean service removal.
 
+### Helper runtime dependency gate
+
+Before considering a root installation, screen the same staged helper used in the signed-artifact preflight.
+
+```sh
+python3 scripts/preflight_helper_dependencies.py \
+  --helper /absolute/path/to/helper-review/Library/PrivilegedHelperTools/llm_interceptor_helper
+```
+
+The checker inspects the Mach-O load commands in every architecture reported by `otool`. It requires the Apple system dynamic linker, rejects runtime search paths and embedded dyld environment overrides, and accepts only absolute library names under `/System/Library/` or `/usr/lib/`. A pass covers these static load commands. Review build provenance and any other runtime code loading, such as plugins or explicit `dlopen` calls, separately before running as root. Perform these checks on a trusted macOS installation and an unchanged review copy.
+
+**Stop if the dependency check fails.** The current Homebrew-linked helper references QtCore and QtNetwork under `/opt/homebrew/opt/qtbase` and declares an `LC_RPATH` under `/opt/homebrew/lib`. On the review Mac, those paths are under an ordinary user's package-manager installation. Copying the helper to a root-owned directory and pinning its cdhash leaves those dependencies in place. The installed smoke remains blocked until an eligible helper build is reviewed. Any proposal to use external dependencies would need separate review of the complete runtime dependency set and the ownership and write permissions of its files, directories, symlinks, and resolved targets.
+
 ### Installation decisions
 
 - Exact helper signing method for the target Mac and review of the resulting cdhash before it is provisioned in the fixed identity file.

@@ -14,6 +14,10 @@ This is the work queue for the next implementation and lab sessions. Use the [de
 
 ## A. Installable privileged host
 
+The XPC request gate has an opt-in test mode for a synthetic Start fixture. It authenticates the sender before reading the dictionary and accepts exactly `operation` (string `start`) and `protocol_version` (XPC unsigned 64-bit integer `1`). The gate returns a parsed operation without dispatching it. The installed service continues to use the read-only gate, and the read-only reply adapter only recognizes Probe and Status.
+
+The fixture has no session payload and defines no production Start format. A lifecycle transport still needs a frozen snapshot handoff, session capability and peer ownership binding, replay and deadline rules, host dispatch, and verification of startup and cleanup with synthetic backends.
+
 1. Choose an explicit, reviewable installation/launch mechanism for the lab Mac. A Developer ID Network Extension is unavailable in this project; the path must use a narrowly scoped privileged helper. Document the exact executable, owner/mode, private state directory, socket location, launch and uninstall steps. Do not make the GUI itself root.
 2. Supply one trusted root-owned private directory descriptor to the host lease and both PF journals. Require the same canonical directory inode, one helper instance, and a running owner-thread event loop for watchdog and listener. Define how the GUI securely receives the one-time session capability; kernel UID/GID alone does not distinguish same-UID processes or prove app identity.
 3. Wire the host factory to the concrete PF runners and read-only verifiers. Verify effective root, exact anchor ownership, enabled PF and both live attachment references before install. Preserve unknown/uncertain journal state for explicit recovery. No global `pfctl -d`; release only the captured `-E` token.

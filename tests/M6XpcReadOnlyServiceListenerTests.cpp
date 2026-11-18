@@ -85,6 +85,8 @@ class M6XpcReadOnlyServiceListenerTests final : public QObject {
     void unsupportedOperationCannotProduceAReplyPayload() {
         QCOMPARE(XpcReadOnlyControlAdapter::createBoundedReplyPayload(XpcControlOperation::Invalid),
                  nullptr);
+        QCOMPARE(XpcReadOnlyControlAdapter::createBoundedReplyPayload(XpcControlOperation::Start),
+                 nullptr);
     }
 
     void adapterAuthenticatesAndRejectsUnauthenticatedMessagesWithoutReply() {

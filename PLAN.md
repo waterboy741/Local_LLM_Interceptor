@@ -162,7 +162,7 @@ Acceptance:
 - Helper packaging, installation, authentication, required privileges, watchdog behavior, and a multi-device walkthrough are verified with actual limitations.
 - Compare live latency/streaming/throughput against stated targets. Resolve findings and obtain all three COMPLETE votes before claiming live support.
 
-#### Live evidence through November 8, 2026
+#### Live evidence through November 17, 2026
 
 | Date | Result | Limit |
 | --- | --- | --- |
@@ -172,6 +172,7 @@ Acceptance:
 | November 5 | The privileged one-second ARP probe reported accepted redirect and corrective writes, descriptor close, and no interruption. The user observed the Ubuntu client’s neighbor mapping change and return to the original server MAC. [CI passed for `a83cf10`.](https://github.com/waterboy741/Local_LLM_Inteceptor/actions/runs/42149093558) | The CLI reported `peer_cache_change_verified: false`. Exact transition timing and the restoration mechanism were not independently captured. Continuous refresh and crash recovery remain open. |
 | November 6–7 | PF readiness reported `pf_disabled` and stopped after the status query. Separate privileged listings showed stock references only. Two syntax-only candidates passed for the current on-disk configuration. The merge tool’s before-marker candidate added exactly two references (58 bytes). All four privileged route/neighbor queries on November 7 matched `en0`, with both neighbor rows resolved and direct-route status unproven. | Syntax and cache evidence leave active evaluation, attachment coexistence, and packet egress unproven. |
 | November 8 | Loopback redirection failed. A manual Ubuntu neighbor override and PF redirect to the Mac’s LAN listener succeeded with `net.link.generic.system.hwcksum_rx=0`. The unchanged Ollama URL returned HTTP 200 for `/api/version` and a successful OpenCode chat response visible in the GUI. After neighbor deletion, direct HTTP recovered. The user restored the neighbor and checksum setting, cleared owned rules, reloaded the saved PF configuration, and released the trial token. PF reported disabled with no starter references. | One established upstream PF state was not separately checked for disappearance. Default checksum behavior, automatic ARP/PF activation, installed-helper trust and lifecycle, and automated crash recovery remain open. The app does not change the checksum setting. [Trial and rollback runbook.](docs/M6_LIVE_DEMO_RUNBOOK.md) |
+| November 17 | A locally signed Debug GUI reached a temporarily installed, root-owned, read-only launchd helper and displayed `Helper identity verified — state: inactive (protocol v1).` The helper stayed healthy when an alternate signed Release GUI attempted a status check. The service was booted out, its process exited, and all run-owned privileged files, directories, and temporary staging copies were removed. | The alternate GUI reported `Helper unavailable`, so the wrong-build rejection criterion remains inconclusive. This trial did not exercise Start, PF, ARP, or recovery. [Read-only smoke procedure.](docs/m6/A3_INSTALLED_READ_ONLY_SMOKE.md) |
 
 #### Implemented M6 groundwork through November 9, 2026
 

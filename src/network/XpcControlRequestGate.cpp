@@ -7,6 +7,7 @@ namespace interceptor {
 namespace {
 constexpr size_t maximumOperationLength = 16;
 constexpr size_t maximumRequirementLength = 1024;
+constexpr uint64_t syntheticProtocolVersion = 1;
 
 bool fail(std::string *error, const char *reason) {
     if (error)
@@ -17,8 +18,8 @@ bool fail(std::string *error, const char *reason) {
 } // namespace
 
 XpcControlRequestGate::XpcControlRequestGate(std::string trustedRequirement,
-                                             XpcPeerCodeSignaturePolicy &policy)
-    : trustedRequirement_(std::move(trustedRequirement)), policy_(policy) {}
+                                             XpcPeerCodeSignaturePolicy &policy, Mode mode)
+    : trustedRequirement_(std::move(trustedRequirement)), policy_(policy), mode_(mode) {}
 
 bool XpcControlRequestGate::isConfigured() const {
     return !trustedRequirement_.empty() && trustedRequirement_.size() <= maximumRequirementLength &&
@@ -37,7 +38,8 @@ bool XpcControlRequestGate::parse(xpc_object_t message, XpcControlRequest *reque
     if (!authenticateXpcPeerMessage(message, trustedRequirement_, policy_, error))
         return false;
 
-    if (xpc_dictionary_get_count(message) != 1)
+    const size_t fieldCount = xpc_dictionary_get_count(message);
+    if (fieldCount != 1 && (mode_ != Mode::SyntheticLifecycle || fieldCount != 2))
         return fail(error, "xpc_control_request_fields_invalid");
 
     xpc_object_t operationValue = xpc_dictionary_get_value(message, "operation");
@@ -52,6 +54,18 @@ bool XpcControlRequestGate::parse(xpc_object_t message, XpcControlRequest *reque
         return fail(error, "xpc_control_request_operation_invalid");
 
     const std::string_view value(operation, operationLength);
+    if (value == "start" && mode_ == Mode::SyntheticLifecycle) {
+        xpc_object_t version = xpc_dictionary_get_value(message, "protocol_version");
+        if (fieldCount != 2 || !version)
+            return fail(error, "xpc_control_request_fields_invalid");
+        if (xpc_get_type(version) != XPC_TYPE_UINT64 ||
+            xpc_uint64_get_value(version) != syntheticProtocolVersion)
+            return fail(error, "xpc_control_request_version_invalid");
+        request->operation = XpcControlOperation::Start;
+        return true;
+    }
+    if (fieldCount != 1)
+        return fail(error, "xpc_control_request_fields_invalid");
     if (value == "probe")
         request->operation = XpcControlOperation::Probe;
     else if (value == "status")

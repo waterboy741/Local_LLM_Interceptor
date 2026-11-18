@@ -8,6 +8,7 @@ enum class XpcControlOperation {
     Invalid,
     Probe,
     Status,
+    Start,
 };
 
 struct XpcControlRequest {
@@ -15,14 +16,17 @@ struct XpcControlRequest {
 };
 
 // Owns the locally trusted code requirement. Authenticates the sender before
-// inspecting protocol fields. The accepted dictionary contains exactly one
-// key (`operation`) with value `probe` or `status`; this gate performs no
-// response encoding, dispatch, or privileged operation. The injected policy
+// inspecting protocol fields. Probe and status accept only the operation key.
+// SyntheticLifecycle also accepts start with protocol_version (uint64 1).
+// This gate performs no response encoding or dispatch. The injected policy
 // must outlive the gate, and calls must be serialized by the caller. The XPC
 // message is borrowed and inspected synchronously.
 class XpcControlRequestGate final {
   public:
-    XpcControlRequestGate(std::string trustedRequirement, XpcPeerCodeSignaturePolicy &policy);
+    enum class Mode { ReadOnly, SyntheticLifecycle };
+
+    XpcControlRequestGate(std::string trustedRequirement, XpcPeerCodeSignaturePolicy &policy,
+                          Mode mode = Mode::ReadOnly);
 
     bool isConfigured() const;
     bool parse(xpc_object_t message, XpcControlRequest *request,
@@ -31,6 +35,7 @@ class XpcControlRequestGate final {
   private:
     const std::string trustedRequirement_;
     XpcPeerCodeSignaturePolicy &policy_;
+    const Mode mode_;
 };
 
 } // namespace interceptor

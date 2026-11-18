@@ -4,15 +4,20 @@
 #include <QTcpServer>
 #include <QTcpSocket>
 #include <QTimer>
+#include <functional>
 #include <memory>
+#include <utility>
 
 // Deliberately small synthetic endpoint, not a reusable HTTP parser. The upstream
 // emits Content-Length requests; chunked client decoding is the proxy's job.
 class MockOllama : public QTcpServer {
+    std::function<void()> pendingStreamCompletion;
+
   public:
     QList<QByteArray> bodies;
     QList<QByteArray> headers;
     bool streaming = false;
+    bool holdStreamCompletion = false;
     bool stall = false;
     bool completed = false;
     bool truncateResponse = false;
@@ -20,6 +25,11 @@ class MockOllama : public QTcpServer {
     int responseStatus = 200;
     QByteArray responseHeaders;
     bool echoBody = false;
+
+    void releaseStreamCompletion() {
+        if (auto finish = std::exchange(pendingStreamCompletion, {}))
+            finish();
+    }
 
     MockOllama() {
         connect(this, &QTcpServer::newConnection, this, [this] {
@@ -59,13 +69,17 @@ class MockOllama : public QTcpServer {
                         socket->write(QByteArray::number(first.size(), 16) + "\r\n" + first +
                                       "\r\n");
                         QPointer<QTcpSocket> guarded(socket);
-                        QTimer::singleShot(300, this, [this, guarded, last] {
+                        auto finish = [this, guarded, last] {
                             completed = true;
                             if (guarded) {
                                 guarded->write(QByteArray::number(last.size(), 16) + "\r\n" + last +
                                                "\r\n0\r\n\r\n");
                             }
-                        });
+                        };
+                        if (holdStreamCompletion)
+                            pendingStreamCompletion = std::move(finish);
+                        else
+                            QTimer::singleShot(300, this, std::move(finish));
                     } else {
                         const bool noBody = head.startsWith("HEAD ") || responseStatus == 204 ||
                                             responseStatus == 304;

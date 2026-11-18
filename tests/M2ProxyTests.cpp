@@ -419,18 +419,55 @@ class M2ProxyTests : public QObject {
     void incrementalNdjson() {
         MockOllama mock;
         mock.streaming = true;
+        mock.holdStreamCompletion = true;
+        auto config = configFor(mock);
+        config.interfaceName.clear();
+        config.clientIp = "127.0.0.1";
+        config.explicitProxy = true;
+        QVERIFY(config.validate().isEmpty());
         ProxyServer proxy;
-        QVERIFY(proxy.start(configFor(mock)));
+        QVERIFY(proxy.start(config));
         QTcpSocket client;
         connectClient(client, proxy);
         QTRY_COMPARE(client.state(), QAbstractSocket::ConnectedState);
         client.write(request("{\"stream\":true}"));
         QByteArray response;
         connect(&client, &QTcpSocket::readyRead, this, [&] { response += client.readAll(); });
-        QTRY_VERIFY(response.contains("Hello"));
-        QVERIFY2(!mock.completed, "Proxy buffered partial NDJSON until completion");
-        QTRY_VERIFY(response.contains("\"done\":true"));
+        struct DecodedResponse {
+            QByteArray records;
+            bool complete = false;
+        };
+        const auto decode = [&response] {
+            DecodedResponse decoded;
+            const auto headerEnd = response.indexOf("\r\n\r\n");
+            if (headerEnd < 0)
+                return decoded;
+            auto offset = headerEnd + 4;
+            while (true) {
+                const auto chunkHeaderEnd = response.indexOf("\r\n", offset);
+                if (chunkHeaderEnd < 0)
+                    return decoded;
+                bool ok = false;
+                const auto size = response.mid(offset, chunkHeaderEnd - offset).toLongLong(&ok, 16);
+                offset = chunkHeaderEnd + 2;
+                if (!ok || size < 0 || size > response.size() - offset - 2 ||
+                    response.mid(offset + size, 2) != "\r\n")
+                    return decoded;
+                if (size == 0) {
+                    decoded.complete = offset + 2 == response.size();
+                    return decoded;
+                }
+                decoded.records += response.mid(offset, size);
+                offset += size + 2;
+            }
+        };
+        const QByteArray firstRecord = "{\"response\":\"Hello\",\"done\":false}\n";
+        QTRY_COMPARE(decode().records, firstRecord);
+        QVERIFY(!decode().complete);
+        mock.releaseStreamCompletion();
         QVERIFY(mock.completed);
+        QTRY_VERIFY(decode().complete);
+        QCOMPARE(decode().records, firstRecord + "{\"response\":\".\",\"done\":true}\n");
     }
 
     void fragmentedAndChunkedRequest() {

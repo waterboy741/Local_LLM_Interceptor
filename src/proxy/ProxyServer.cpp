@@ -682,6 +682,7 @@ class Engine : public QAbstractHttpServer {
             if (error != QNetworkReply::NoError && !statusError)
                 transfer->downstream->abort();
             else if (!transfer->noBody)
+                // Qt may warn about the empty final payload and still emit the HTTP terminator.
                 transfer->responder->writeEndChunked({});
             cleanup();
         };

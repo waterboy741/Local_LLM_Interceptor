@@ -462,6 +462,77 @@ class M1FoundationTests : public QObject {
         QVERIFY(details->toPlainText().isEmpty());
     }
 
+    void loopbackObserveStartsFromGuiAndRelaysLocalChat() {
+        if (!loopbackAvailable())
+            QSKIP("Loopback sockets are unavailable in this test environment.");
+        MockOllama mock;
+        SessionController controller;
+        MainWindow window(&controller);
+        auto *interfaces = window.findChild<QComboBox *>("interfaceInput");
+        auto *clientInput = window.findChild<QLineEdit *>("clientIpInput");
+        auto *serverInput = window.findChild<QLineEdit *>("serverIpInput");
+        auto *serverPort = window.findChild<QSpinBox *>("serverPortInput");
+        auto *listenPort = window.findChild<QSpinBox *>("localListenPortInput");
+        auto *prepare = window.findChild<QPushButton *>("prepareButton");
+        auto *start = window.findChild<QPushButton *>("startObserveButton");
+        auto *status = window.findChild<QLabel *>("sessionStatus");
+        auto *requests = window.findChild<QListWidget *>("observedRequests");
+        QVERIFY(interfaces && clientInput && serverInput && serverPort && listenPort && prepare &&
+                start && status && requests);
+
+        const auto loopback = QNetworkInterface::interfaceFromName("lo0");
+        if (!loopback.isValid())
+            QSKIP("The macOS lo0 interface is unavailable.");
+        const int loopbackRow = interfaces->findData(loopback.name());
+        QVERIFY(loopbackRow >= 0);
+        interfaces->setCurrentIndex(loopbackRow);
+        clientInput->setText("127.0.0.1");
+        serverInput->setText("127.0.0.1");
+        serverPort->setValue(mock.serverPort());
+        listenPort->setValue(0);
+        prepare->click();
+        QCOMPARE(controller.state(), SessionController::State::Ready);
+        QVERIFY(controller.config().has_value());
+        QVERIFY(controller.config()->explicitProxy);
+        QCOMPARE(controller.config()->clientIp, QString("127.0.0.1"));
+        QCOMPARE(controller.config()->serverIp, QString("127.0.0.1"));
+        QVERIFY(controller.config()->interfaceName.isEmpty());
+        QVERIFY(start->isEnabled());
+        start->click();
+
+        const auto endpoint =
+            QRegularExpression(R"(http://127\.0\.0\.1:(\d+))").match(status->text());
+        QVERIFY2(endpoint.hasMatch(), qPrintable(status->text()));
+        const auto proxyPort = endpoint.captured(1).toUShort();
+        QVERIFY(proxyPort != 0 && proxyPort != mock.serverPort());
+        QVERIFY(!start->isEnabled());
+
+        QTcpSocket client;
+        client.connectToHost(QHostAddress::LocalHost, proxyPort);
+        QTRY_COMPARE(client.state(), QAbstractSocket::ConnectedState);
+        const QByteArray body =
+            "{\"model\":\"fixture\",\"messages\":[{\"role\":\"user\",\"content\":\"hello\"}]}";
+        client.write("POST /v1/chat/completions HTTP/1.1\r\nHost: example\r\n"
+                     "Content-Type: application/json\r\nContent-Length: " +
+                     QByteArray::number(body.size()) + "\r\n\r\n" + body);
+        QTRY_COMPARE(mock.bodies, QList<QByteArray>{body});
+        QTRY_VERIFY(client.peek(client.bytesAvailable()).contains("{\"done\":true}"));
+        QTRY_COMPARE(requests->count(), 1);
+        QVERIFY(requests->item(0)->text().contains("POST /v1/chat/completions"));
+        controller.stop();
+        QTRY_COMPARE(client.state(), QAbstractSocket::UnconnectedState);
+
+        clientInput->setText("192.0.2.10");
+        prepare->click();
+        QCOMPARE(controller.state(), SessionController::State::Ready);
+        QVERIFY(controller.config().has_value());
+        QCOMPARE(controller.config()->interfaceName, loopback.name());
+        QVERIFY(start->isEnabled());
+        start->click();
+        QVERIFY2(status->text().contains("no usable IPv4 address"), qPrintable(status->text()));
+        QCOMPARE(mock.bodies, QList<QByteArray>{body});
+    }
+
     void openAiCompatiblePathIsIncludedInDefaults() {
         const SessionConfig config;
         QVERIFY(config.apiPaths.contains("/v1/chat/completions"));

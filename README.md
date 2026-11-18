@@ -23,9 +23,11 @@ GitHub Actions runs the debug, release, and sanitizer presets on a macOS runner 
 
 ## Configuration and permissions
 
+For a client and upstream on the same Mac, select `lo0` and enter `127.0.0.1` for both IPv4 fields. Connect the client to the displayed loopback URL. The [single Mac demo](docs/EXPLICIT_PROXY_DEMO.md) uses synthetic prompts and a mock server to show request inspection, editing, and streaming.
+
 Select an active Mac interface, then enter the remote client's and Ollama server's unicast IPv4 addresses, server TCP port from 1 to 65535, and comma-separated API paths. **Prepare configuration** validates and stores these settings without opening a listener. **Start Observe proxy** binds to a usable IPv4 address on the selected interface and accepts connections only from the configured client IPv4. Set the remote client's Ollama base URL to the LAN URL shown by the app. Requests sent to the unchanged server address are not redirected. The interface list also includes inactive and loopback interfaces, but they cannot be used for the LAN listener. Clear the session to change its configuration.
 
-The proxy listen port defaults to `11434` and can be set to **Automatic**. Use a free port on the Mac. Clear session stops the listener; restore the client's original Ollama base URL afterward. The current GUI supports the explicit remote-client workflow; the lower-level transparent listener remains available to offline tests and future helper work. The earlier manually operated lab setup is recorded in the [minimal lab demo plan](docs/M6_MINIMAL_LAB_DEMO.md) and [runbook](docs/M6_LIVE_DEMO_RUNBOOK.md).
+The proxy listen port defaults to `11434` and can be set to **Automatic**. Use a free port on the Mac. Clear session stops the listener. Restore the client's original Ollama base URL afterward. The earlier manually operated lab setup is recorded in the [minimal lab demo plan](docs/M6_MINIMAL_LAB_DEMO.md) and [runbook](docs/M6_LIVE_DEMO_RUNBOOK.md).
 
 Launch and offline tests need no capture privileges; socket-based tests need permission to bind synthetic loopback endpoints. Future capture/injection/PF operations will use a scoped helper and explicit activation; never run the GUI as root. Capture only authorized traffic. M6 has bounded manual Wi-Fi/PF request evidence; automated activation, privileged-helper lifecycle, and recovery remain incomplete. See [PLAN.md](PLAN.md) and [M0 lab record](docs/M0_LAB.md).
 

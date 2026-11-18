@@ -175,7 +175,7 @@ MainWindow::MainWindow(SessionController *controller,
     auto *configPage = new QWidget(tabs);
     auto *layout = new QVBoxLayout(configPage);
     tabs->addTab(configPage, "Configuration");
-    layout->addWidget(new QLabel("Prepare a remote-client proxy configuration, then explicitly "
+    layout->addWidget(new QLabel("Prepare a proxy configuration, then explicitly "
                                  "start the Observe proxy.",
                                  panel));
     auto *form = new QFormLayout;
@@ -839,22 +839,31 @@ MainWindow::MainWindow(SessionController *controller,
                     static_cast<std::size_t>(historyMemory->value()) * 1024 * 1024;
                 // A first Ollama request may load the model before sending response headers.
                 options.timeoutMs = 120000;
-                const auto address = usableInterfaceIPv4(config->interfaceName);
-                if (!address) {
-                    status_->setText("The selected interface is inactive or has no usable "
-                                     "IPv4 address. Refresh interfaces and try again.");
-                    return;
+                const bool local = config->interfaceName.isEmpty();
+                if (local) {
+                    options.listenAddress = "127.0.0.1";
+                } else {
+                    const auto address = usableInterfaceIPv4(config->interfaceName);
+                    if (!address) {
+                        status_->setText("The selected interface is inactive or has no usable "
+                                         "IPv4 address. Refresh interfaces and try again.");
+                        return;
+                    }
+                    options.listenAddress = *address;
+                    options.allowedClientIp = config->clientIp;
                 }
-                options.listenAddress = *address;
-                options.allowedClientIp = config->clientIp;
                 if (proxy_.start(*config, options)) {
                     const QString url =
                         QString("http://%1:%2").arg(options.listenAddress).arg(proxy_.listenPort());
-                    status_->setText(QString("Proxy listening at %1 — set the remote client's "
-                                             "Ollama base URL to this Mac LAN address. Requests "
-                                             "sent to the unchanged server address are not "
-                                             "redirected.")
-                                         .arg(url));
+                    status_->setText(
+                        local ? QString("Proxy listening at %1 — set the local client's "
+                                        "Ollama base URL to this address.")
+                                    .arg(url)
+                              : QString("Proxy listening at %1 — set the remote client's "
+                                        "Ollama base URL to this Mac LAN address. Requests "
+                                        "sent to the unchanged server address are not "
+                                        "redirected.")
+                                    .arg(url));
                     startProxy->setEnabled(false);
                     listenPort_->setEnabled(false);
                 } else
@@ -913,6 +922,10 @@ MainWindow::MainWindow(SessionController *controller,
         SessionConfig config{interface_->currentData().toString(), client_->text(), server_->text(),
                              port_->value(), paths_->text().split(',')};
         config.explicitProxy = true;
+        const auto selectedInterface = QNetworkInterface::interfaceFromName(config.interfaceName);
+        if (selectedInterface.flags().testFlag(QNetworkInterface::IsLoopBack) &&
+            config.clientIp == "127.0.0.1" && config.serverIp == "127.0.0.1")
+            config.interfaceName.clear();
         auto errors = config.validate();
         if (QHostAddress(config.serverIp).isLoopback() && listenPort_->value() != 0 &&
             config.serverPort == listenPort_->value())

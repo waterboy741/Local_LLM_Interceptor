@@ -4,6 +4,9 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QNetworkAccessManager>
+#include <QNetworkProxy>
+#include <QNetworkReply>
 #include <QtTest>
 
 using namespace interceptor;
@@ -43,6 +46,25 @@ class M3ModificationTests : public QObject {
         options.mode = InterceptionMode::Modify;
         options.automaticOperation = operation;
         return options;
+    }
+
+    static QNetworkReply *postStreamingChat(QNetworkAccessManager &client, const ProxyServer &proxy,
+                                            const QByteArray &body) {
+        client.setProxy(QNetworkProxy::NoProxy);
+        QNetworkRequest request(QUrl(
+            QStringLiteral("http://127.0.0.1:%1/v1/chat/completions").arg(proxy.listenPort())));
+        request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+        request.setRawHeader("Accept", "text/event-stream");
+        return client.post(request, body);
+    }
+
+    static SessionConfig localChatConfig(const MockOllama &mock) {
+        auto config = configFor(mock);
+        config.interfaceName.clear();
+        config.clientIp = "127.0.0.1";
+        config.explicitProxy = true;
+        config.apiPaths = {"/v1/chat/completions"};
+        return config;
     }
 
   private slots:
@@ -115,6 +137,98 @@ class M3ModificationTests : public QObject {
         QCOMPARE(QJsonDocument::fromJson(mock.bodies.front()).object(), expected);
         QTRY_COMPARE(proxy.history().size(), std::size_t(1));
         QVERIFY(proxy.history().front().modified);
+    }
+
+    void automaticReplaceLastStreamsOpenAiResponse_data() {
+        QTest::addColumn<QString>("replacement");
+        QTest::addColumn<bool>("shorter");
+        QTest::newRow("shorter") << QStringLiteral("hi") << true;
+        QTest::newRow("longer") << QStringLiteral("A longer synthetic message with café 🤖")
+                                << false;
+    }
+
+    void automaticReplaceLastStreamsOpenAiResponse() {
+        QFETCH(QString, replacement);
+        QFETCH(bool, shorter);
+        MockOllama mock;
+        mock.streaming = true;
+        mock.openAiSse = true;
+        mock.holdStreamCompletion = true;
+        ProxyServer proxy;
+        QVERIFY(proxy.start(localChatConfig(mock)));
+        auto options = automatic(AutomaticOperation::ReplaceLastMessage);
+        options.automaticMessage = QJsonObject{{"role", "user"}, {"content", replacement}};
+        QVERIFY(proxy.setModificationOptions(options));
+
+        const QByteArray original =
+            "{\"model\":\"fixture\",\"messages\":[{\"role\":\"system\",\"content\":\"keep\"},"
+            "{\"role\":\"user\",\"content\":\"original question\",\"name\":\"fixture\"}],"
+            "\"stream\":true,\"temperature\":0.4}";
+        QNetworkAccessManager client;
+        auto *reply = postStreamingChat(client, proxy, original);
+        QTRY_COMPARE(mock.bodies.size(), 1);
+        const auto forwarded = mock.bodies.front();
+        QVERIFY(shorter ? forwarded.size() < original.size() : forwarded.size() > original.size());
+        auto expected = QJsonDocument::fromJson(original).object();
+        auto messages = expected["messages"].toArray();
+        messages[messages.size() - 1] = options.automaticMessage;
+        expected["messages"] = messages;
+        QCOMPARE(QJsonDocument::fromJson(forwarded).object(), expected);
+        QVERIFY(mock.headers.front().startsWith("POST /v1/chat/completions HTTP/"));
+        QList<QByteArray> lengths;
+        for (const auto &line : mock.headers.front().split('\n')) {
+            if (line.toLower().startsWith("content-length:"))
+                lengths.append(line.mid(line.indexOf(':') + 1).trimmed());
+        }
+        QCOMPARE(lengths, QList<QByteArray>{QByteArray::number(forwarded.size())});
+
+        const QByteArray first = "data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n\n";
+        QTRY_VERIFY(reply->bytesAvailable() >= first.size());
+        QCOMPARE(reply->rawHeader("Content-Type"), QByteArray("text/event-stream"));
+        QCOMPARE(reply->readAll(), first);
+        QVERIFY(!reply->isFinished());
+        QVERIFY(!mock.completed);
+
+        mock.releaseStreamCompletion();
+        QTRY_VERIFY(reply->isFinished());
+        QCOMPARE(reply->error(), QNetworkReply::NoError);
+        QCOMPARE(reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt(), 200);
+        QCOMPARE(reply->readAll(),
+                 QByteArray(
+                     "data: {\"choices\":[{\"delta\":{\"content\":\".\"}}]}\n\ndata: [DONE]\n\n"));
+        QVERIFY(mock.completed);
+        QCOMPARE(mock.bodies.size(), 1);
+        QTRY_COMPARE(proxy.history().size(), std::size_t(1));
+        const auto record = proxy.history().front();
+        QVERIFY(record.modified);
+        QCOMPARE(record.status, 200);
+        QCOMPARE(record.originalBody, original);
+        QCOMPARE(record.modifiedBody, forwarded);
+    }
+
+    void cancellingAnOpenAiStreamDisconnectsUpstream() {
+        MockOllama mock;
+        mock.streaming = true;
+        mock.openAiSse = true;
+        mock.holdStreamCompletion = true;
+        ProxyServer proxy;
+        QVERIFY(proxy.start(localChatConfig(mock)));
+
+        QNetworkAccessManager client;
+        auto *reply = postStreamingChat(
+            client, proxy,
+            "{\"model\":\"fixture\",\"messages\":[{\"role\":\"user\",\"content\":\"hello\"}],"
+            "\"stream\":true}");
+        QTRY_VERIFY(reply->peek(reply->bytesAvailable()).contains("Hello"));
+        QVERIFY(!reply->isFinished());
+        QVERIFY(!mock.completed);
+
+        reply->abort();
+        QTRY_VERIFY(reply->isFinished());
+        QCOMPARE(reply->error(), QNetworkReply::OperationCanceledError);
+        QTRY_COMPARE(mock.disconnectedClients, 1);
+        QCOMPARE(mock.bodies.size(), 1);
+        QVERIFY(!mock.completed);
     }
 
     void unsupportedReplacementRoleFallsBackOnOllamaChatPath() {

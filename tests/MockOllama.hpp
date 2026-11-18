@@ -17,6 +17,7 @@ class MockOllama : public QTcpServer {
     QList<QByteArray> bodies;
     QList<QByteArray> headers;
     bool streaming = false;
+    bool openAiSse = false;
     bool holdStreamCompletion = false;
     bool stall = false;
     bool completed = false;
@@ -62,9 +63,18 @@ class MockOllama : public QTcpServer {
                         socket->write("HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\nshort");
                         socket->disconnectFromHost();
                     } else if (streaming) {
-                        const QByteArray first = "{\"response\":\"Hello\",\"done\":false}\n";
-                        const QByteArray last = "{\"response\":\".\",\"done\":true}\n";
-                        socket->write("HTTP/1.1 200 OK\r\nContent-Type: application/x-ndjson\r\n"
+                        const QByteArray first =
+                            openAiSse
+                                ? "data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n\n"
+                                : "{\"response\":\"Hello\",\"done\":false}\n";
+                        const QByteArray last =
+                            openAiSse ? "data: {\"choices\":[{\"delta\":{\"content\":\".\"}}]}\n\n"
+                                        "data: [DONE]\n\n"
+                                      : "{\"response\":\".\",\"done\":true}\n";
+                        const QByteArray contentType =
+                            openAiSse ? "text/event-stream" : "application/x-ndjson";
+                        socket->write("HTTP/1.1 200 OK\r\nContent-Type: " + contentType +
+                                      "\r\n"
                                       "Transfer-Encoding: chunked\r\n\r\n");
                         socket->write(QByteArray::number(first.size(), 16) + "\r\n" + first +
                                       "\r\n");

@@ -50,7 +50,7 @@ python3 scripts/preflight_launchd_helper.py \
 
 The preflight checks the fixed staged helper and plist paths, file modes, and launchd configuration. It uses macOS code-signature verification to check each artifact against its reviewed cdhash, including the GUI bundle's nested code. Run it on trusted local staging directories that will stay unchanged during verification. A successful check prints `a3_offline_preflight_passed` followed by two separate proposals for review. The `enabled=false` and `peer-code-requirement` lines belong to the helper's GUI policy. The `helper-code-requirement` line belongs to the GUI's helper identity file. These are stdout proposals only.
 
-The installed A3 smoke remains pending after preflight. It requires separately authorized provisioning on the target Mac and evidence of a successful ordinary-GUI status request, wrong-build rejection in both directions, and clean service removal.
+The installed A3 smoke remains pending after preflight. The [A3 lab runbook](A3_INSTALLED_READ_ONLY_SMOKE.md) covers temporary provisioning on the target Mac, an ordinary-GUI status request, wrong-build rejection in both directions, and removal.
 
 ### Helper runtime dependency gate
 

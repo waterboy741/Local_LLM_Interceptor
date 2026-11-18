@@ -245,15 +245,17 @@ class M3ModificationTests : public QObject {
         const QList<QByteArray> originals = {
             " { \"model\":\"fixture\", \"temperature\":0.3 } ",
             " { \"model\":\"fixture\", \"messages\":{\"unexpected\":true} } "};
-        for (const auto &original : originals) {
+        for (qsizetype index = 0; index < originals.size(); ++index) {
+            const auto &original = originals.at(index);
             client.write(request(original, "/v1/chat/completions"));
-            const auto expectedCount = mock.bodies.size() + 1;
-            QTRY_COMPARE(mock.bodies.size(), expectedCount);
+
+            QTRY_COMPARE(mock.bodies.size(), index + 1);
             QCOMPARE(mock.bodies.back(), original);
-        }
-        QCOMPARE(proxy.history().size(), std::size_t(originals.size()));
-        for (const auto &record : proxy.history())
+            QTRY_COMPARE(proxy.history().size(), std::size_t(index + 1));
+            const auto record = proxy.history().back();
+            QCOMPARE(record.originalBody, original);
             QVERIFY(!record.modified);
+        }
     }
 
     void automaticNoOpAndObserveForwardIncomingBytesUnchanged() {

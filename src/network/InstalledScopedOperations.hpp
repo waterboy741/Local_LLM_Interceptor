@@ -111,7 +111,11 @@ class InstalledScopedJournal {
 
   private:
     bool flush();
+    void closeDirectory();
 
+    // Owned duplicate of the trusted directory descriptor: the caller stays free to close its
+    // own fd right after construction; the journal keeps directory access for the whole process
+    // lifetime (reopen and on-demand create both use it).
     int directoryFd_ = -1;
     int descriptor_ = -1;
     std::vector<std::string> records_;

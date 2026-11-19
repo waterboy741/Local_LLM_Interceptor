@@ -526,18 +526,37 @@ void InstalledScopedBpfArpIo::close() {
     }
 }
 
-InstalledScopedJournal::~InstalledScopedJournal() { close(); }
+InstalledScopedJournal::~InstalledScopedJournal() {
+    close();
+    closeDirectory();
+}
+
+void InstalledScopedJournal::closeDirectory() {
+    if (directoryFd_ >= 0) {
+        ::close(directoryFd_);
+        directoryFd_ = -1;
+    }
+}
 
 bool InstalledScopedJournal::open(int trustedDirectoryFd) {
     close();
+    closeDirectory();
     if (trustedDirectoryFd < 0)
         return false;
-    directoryFd_ = trustedDirectoryFd;
+    // Own a duplicate for the process lifetime: the caller may close its own fd immediately
+    // after construction (the helper main does), and every later openat — reopen or the
+    // create-on-demand first append — must still address the trusted directory.
+    directoryFd_ = ::dup(trustedDirectoryFd);
+    if (directoryFd_ < 0)
+        return false;
+    const int descriptorFlags = ::fcntl(directoryFd_, F_GETFD);
+    if (descriptorFlags >= 0)
+        (void)::fcntl(directoryFd_, F_SETFD, descriptorFlags | FD_CLOEXEC);
     // No O_CREAT: an absent file is the CLEAN state (no obligations), not an error; the file is
     // created on demand by the first append, never pre-created. Every other open failure stays
     // an error so an unreadable existing journal never silently becomes clean.
-    descriptor_ = ::openat(trustedDirectoryFd, std::string(journalName).c_str(),
-                           O_RDWR | O_CLOEXEC | O_APPEND);
+    descriptor_ =
+        ::openat(directoryFd_, std::string(journalName).c_str(), O_RDWR | O_CLOEXEC | O_APPEND);
     if (descriptor_ < 0) {
         if (errno == ENOENT)
             return true; // clean: no obligation file exists
@@ -574,7 +593,49 @@ bool InstalledScopedJournal::open(int trustedDirectoryFd) {
     return true;
 }
 
-bool InstalledScopedJournal::reopen() { return open(directoryFd_); }
+bool InstalledScopedJournal::reopen() {
+    // Re-read from the owned directory duplicate, which stays valid for the process lifetime
+    // even after the constructing caller closed its own descriptor.
+    close();
+    if (directoryFd_ < 0)
+        return false;
+    descriptor_ =
+        ::openat(directoryFd_, std::string(journalName).c_str(), O_RDWR | O_CLOEXEC | O_APPEND);
+    if (descriptor_ < 0) {
+        if (errno == ENOENT)
+            return true; // clean: no obligation file exists
+        descriptor_ = -1;
+        return false;
+    }
+    std::string content;
+    char buffer[4096];
+    ssize_t received = 0;
+    // O_APPEND bounds reads to the start; use pread until EOF for the recovery view.
+    std::size_t offset = 0;
+    while ((received = ::pread(descriptor_, buffer, sizeof(buffer), static_cast<off_t>(offset))) >
+           0) {
+        content.append(buffer, static_cast<std::size_t>(received));
+        offset += static_cast<std::size_t>(received);
+        if (content.size() > maximumJournalBytes) {
+            close();
+            return false;
+        }
+    }
+    if (received < 0) {
+        close();
+        return false;
+    }
+    std::size_t position = 0;
+    while (position < content.size()) {
+        std::size_t end = content.find('\n', position);
+        if (end == std::string::npos)
+            end = content.size();
+        if (end > position)
+            records_.push_back(content.substr(position, end - position));
+        position = end + 1;
+    }
+    return true;
+}
 
 bool InstalledScopedJournal::append(const std::string &record) {
     if (directoryFd_ < 0 || record.empty() || record.size() > 256 ||

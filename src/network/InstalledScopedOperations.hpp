@@ -97,7 +97,12 @@ class InstalledScopedJournal {
     InstalledScopedJournal(const InstalledScopedJournal &) = delete;
     InstalledScopedJournal &operator=(const InstalledScopedJournal &) = delete;
 
+    // Opens (or notes the clean absence of) the obligations file. An absent file is the clean
+    // state: it is created on demand by the first append, never pre-created.
     bool open(int trustedDirectoryFd);
+    // Re-reads the durable state from the trusted directory; a Start re-checks the file so an
+    // operator-side cleanup of a stranded record takes effect without a process restart.
+    bool reopen();
     bool hasRecords() const { return !records_.empty(); }
     const std::vector<std::string> &records() const { return records_; }
     bool append(const std::string &record);
@@ -107,6 +112,7 @@ class InstalledScopedJournal {
   private:
     bool flush();
 
+    int directoryFd_ = -1;
     int descriptor_ = -1;
     std::vector<std::string> records_;
 };

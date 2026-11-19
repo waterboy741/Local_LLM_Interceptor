@@ -532,9 +532,15 @@ bool InstalledScopedJournal::open(int trustedDirectoryFd) {
     close();
     if (trustedDirectoryFd < 0)
         return false;
+    directoryFd_ = trustedDirectoryFd;
+    // No O_CREAT: an absent file is the CLEAN state (no obligations), not an error; the file is
+    // created on demand by the first append, never pre-created. Every other open failure stays
+    // an error so an unreadable existing journal never silently becomes clean.
     descriptor_ = ::openat(trustedDirectoryFd, std::string(journalName).c_str(),
-                           O_RDWR | O_CREAT | O_CLOEXEC | O_APPEND, 0600);
+                           O_RDWR | O_CLOEXEC | O_APPEND);
     if (descriptor_ < 0) {
+        if (errno == ENOENT)
+            return true; // clean: no obligation file exists
         descriptor_ = -1;
         return false;
     }
@@ -568,10 +574,19 @@ bool InstalledScopedJournal::open(int trustedDirectoryFd) {
     return true;
 }
 
+bool InstalledScopedJournal::reopen() { return open(directoryFd_); }
+
 bool InstalledScopedJournal::append(const std::string &record) {
-    if (descriptor_ < 0 || record.empty() || record.size() > 256 ||
+    if (directoryFd_ < 0 || record.empty() || record.size() > 256 ||
         record.find('\n') != std::string::npos)
         return false;
+    if (descriptor_ < 0) {
+        // Create on demand: the first obligation ever written is what creates the file.
+        descriptor_ = ::openat(directoryFd_, std::string(journalName).c_str(),
+                               O_WRONLY | O_CREAT | O_CLOEXEC | O_APPEND, 0600);
+        if (descriptor_ < 0)
+            return false;
+    }
     std::string line = record;
     line.push_back('\n');
     if (!writeAll(descriptor_, line.data(), line.size()) || ::fsync(descriptor_) != 0)
@@ -704,6 +719,11 @@ bool InstalledScopedOperations::startOnQueue(const InstalledSessionTuple &tuple,
     // Always logged, including the empty-journal no-op, so an absent line is unambiguous.
     {
         ScopedPhaseLog reconcilePhase("journal_reconcile");
+        // Re-read the durable state before deciding: an absent file is clean (create-on-demand
+        // handled by the journal itself), and an operator-side cleanup of a stranded record by
+        // the documented path takes effect on the next Start without a process restart.
+        if (!journal_.reopen())
+            return failStart("journal_unavailable");
         if (journal_.hasRecords()) {
             // A previous start died with obligations outstanding (process restart with a
             // journaled enable token, anchor, or settings restore). Attempt the ordered

@@ -83,7 +83,6 @@ XpcSessionControlClientResult parseReply(xpc_object_t reply) {
     }
 
     result.status = XpcSessionControlClientStatus::Success;
-    result.ok = true;
     return result;
 }
 

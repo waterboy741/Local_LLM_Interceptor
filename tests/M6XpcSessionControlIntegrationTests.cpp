@@ -299,10 +299,6 @@ class M6XpcSessionControlIntegrationTests final : public QObject {
         QCOMPARE(replay.status, XpcSessionControlClientStatus::Success);
         QCOMPARE(replay.reason, QStringLiteral("session_binding_mismatch"));
         QCOMPARE(replay.state, QStringLiteral("stopped"));
-        // Production defect under test: parseReply() unconditionally overwrites result.ok with
-        // true, so rejected replies lose their ok=false (see the dedicated heartbeat case).
-        QEXPECT_FAIL("", "XpcSessionControlClient::parseReply overwrites ok=true on rejected replies",
-                     Continue);
         QVERIFY(!replay.ok);
     }
 
@@ -336,9 +332,6 @@ class M6XpcSessionControlIntegrationTests final : public QObject {
         QCOMPARE(duplicate.reason, QStringLiteral("duplicate_start"));
         QCOMPARE(duplicate.state, QStringLiteral("active"));
         QVERIFY(duplicate.sessionCapability.isEmpty());
-        // Same documented defect: the rejected reply's ok=false is lost to the overwrite.
-        QEXPECT_FAIL("", "XpcSessionControlClient::parseReply overwrites ok=true on rejected replies",
-                     Continue);
         QVERIFY(!duplicate.ok);
     }
 
@@ -477,12 +470,6 @@ class M6XpcSessionControlIntegrationTests final : public QObject {
         const auto heartbeat = M6XpcSessionControlClientTestAccess::heartbeat(
             harness.endpoint(), QStringLiteral("0123456789abcdef"), QByteArray(32, 'c'),
             requirement, 3000);
-        // Production defect under test: parseReply() overwrites result.ok with true
-        // (src/network/XpcSessionControlClient.cpp, end of parseReply), so the GUI's
-        // "succeeded() && ok && state==active" heartbeat path treats a rejected heartbeat as
-        // healthy and never attempts its stop. The contract requires ok=false here.
-        QEXPECT_FAIL("", "XpcSessionControlClient::parseReply overwrites ok=true on rejected replies",
-                     Continue);
         QVERIFY(!heartbeat.ok);
     }
 

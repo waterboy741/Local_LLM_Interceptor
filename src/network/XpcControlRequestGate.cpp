@@ -26,7 +26,11 @@ bool validSessionId(std::string_view sessionId) {
 bool validInterfaceName(std::string_view name) {
     if (name.empty() || name.size() > 32 || !validSessionId(name))
         return false;
-    return isalnum(static_cast<unsigned char>(name.front())) != 0;
+    // Aligned with SessionConfig: interface names must begin with a letter.
+    const char first = name.front();
+    const bool lower = first >= 'a' && first <= 'z';
+    const bool upper = first >= 'A' && first <= 'Z';
+    return lower || upper;
 }
 
 bool decimalOctet(std::string_view text) {

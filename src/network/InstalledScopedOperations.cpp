@@ -152,7 +152,12 @@ std::string neighborMacOnInterface(const std::string &arpOutput, const std::stri
         const std::size_t on = line.find(" on ", macEnd);
         if (on == std::string::npos || !asciiHex(mac))
             continue;
-        const std::string interface = trim(line.substr(on + 4));
+        // Real `arp -n` output is `? (a.b.c.d) at MAC on en0 ifscope [ethernet]` (and
+        // `permanent` variants); the interface is the single token after "on".
+        const std::string remainder = line.substr(on + 4);
+        const std::size_t interfaceEnd = remainder.find_first_of(" \t");
+        const std::string interface =
+            trim(interfaceEnd == std::string::npos ? remainder : remainder.substr(0, interfaceEnd));
         if (interface != interfaceName || decodeMac(mac).size() != 6)
             continue;
         return mac;

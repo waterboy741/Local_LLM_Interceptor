@@ -292,20 +292,31 @@ XpcSessionControlReply InstalledSessionControlCore::startSession(const XpcContro
         nowMs = 0;
     lastHeartbeatMs_ = nowMs;
 
-    // One-time session identity + capability: SecRandom-backed, delivered only here.
+    // One-time session identity + capability: SecRandom-backed, delivered only here. A failure
+    // here cannot leak owned operations: the backend cleanup runs before the rejection so the
+    // response carries no capability and the owned PF/ARP state is torn down or held by the
+    // backend's journal, never silently left active.
     unsigned char identifier[8], randomCapability[xpcSessionControlCapabilityBytes];
     if (SecRandomCopyBytes(kSecRandomDefault, sizeof(identifier), identifier) != errSecSuccess ||
         SecRandomCopyBytes(kSecRandomDefault, sizeof(randomCapability), randomCapability) !=
-            errSecSuccess)
+            errSecSuccess) {
+        bool cleaned = false;
+        (void)backend_.stopOwnedOperations(&cleaned, nullptr);
         return reject("session_credentials_unavailable");
+    }
     sessionId_.clear();
     sessionId_.reserve(2 + 2 * sizeof(identifier));
     hexAppend(identifier, sizeof(identifier), &sessionId_);
     capability_.assign(randomCapability, randomCapability + sizeof(randomCapability));
     (void)memset_s(identifier, sizeof(identifier), 0, sizeof(identifier));
     (void)memset_s(randomCapability, sizeof(randomCapability), 0, sizeof(randomCapability));
-    if (capability_.size() != xpcSessionControlCapabilityBytes)
+    if (capability_.size() != xpcSessionControlCapabilityBytes) {
+        // Same fail-path rollback as the SecRandom failure: never leave owned state running
+        // behind a Start reply that carries no usable handle.
+        bool cleaned = false;
+        (void)backend_.stopOwnedOperations(&cleaned, nullptr);
         return reject("session_credentials_unavailable");
+    }
 
     state_ = xpcSessionControlStateActive;
     reply.state.assign(state_);

@@ -90,8 +90,13 @@ bool parseLaunchdMachServiceConfig(std::string_view contents, LaunchdMachService
         return fail(error, "launchd_mach_service_config_format_invalid");
     requirement.remove_prefix(key.size());
     const bool enabled = setting == "enabled=true";
-    const bool valid = enabled ? exactRequirementCompiles(requirement)
-                               : validRequirement(requirement) && requirementCompiles(requirement);
+    // An enabled 3-line config still carries the trailing session-control line here; its exact
+    // requirement validation is deferred to the third-line block after stripping, so only a
+    // genuine two-line requirement is checked at this point.
+    const bool hasLineBeyondRequirement = requirement.find('\n') != std::string_view::npos;
+    const bool valid = !enabled ? validRequirement(requirement) && requirementCompiles(requirement)
+                       : hasLineBeyondRequirement ? true
+                                                  : exactRequirementCompiles(requirement);
     if (!valid)
         return fail(error, "launchd_mach_service_peer_requirement_invalid");
 

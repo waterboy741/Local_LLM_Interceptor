@@ -342,6 +342,31 @@ bool LeasedHelperHost::dispatchOne(int connectedSocketFd, QString *error) {
     return accepted;
 }
 
+bool LeasedHelperHost::dispatchControlCommand(const VerifiedPeer &transportPeer,
+                                              const HelperCommand &command, QString *error) {
+    if (error)
+        error->clear();
+    if (!state_ || !state_->onOwnerThread() || !state_->startAttempted) {
+        if (error)
+            *error = QStringLiteral("helper_not_started_or_wrong_thread");
+        return false;
+    }
+    if (state_->readiness && !state_->readiness->isCurrent()) {
+        if (error)
+            *error = QStringLiteral("transparent_proxy_not_current");
+        (void)stop(nullptr);
+        return false;
+    }
+    const bool accepted = state_->dispatcher->dispatch(transportPeer, command);
+    if (state_->dispatcher->state() == NetworkSession::State::Idle) {
+        wipe(state_->controlCapability);
+        wipe(state_->clientCapability);
+    }
+    if (!accepted && error && error->isEmpty())
+        *error = QStringLiteral("helper_command_rejected");
+    return accepted;
+}
+
 std::optional<HelperHostCredentials> LeasedHelperHost::takeCredentials() {
     if (!state_ || !state_->onOwnerThread() || !state_->started || state_->credentialsTaken ||
         state_->dispatcher->state() != NetworkSession::State::Active ||

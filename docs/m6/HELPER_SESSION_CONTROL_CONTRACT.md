@@ -1,0 +1,93 @@
+# Helper session control: runtime boundary decision and v1 contract
+
+This is the design record for backlog package B's first increment. It resolves the runtime-boundary question flagged in the [implementation backlog](IMPLEMENTATION_BACKLOG.md) (section B), fixes the versioned Start/Heartbeat/Stop request/reply contract for the fixed Mach service `org.local-llm-interceptor.helper`, and specifies the startup ordering, capability delivery, and failure behavior that the lifecycle runtime implements. Everything in this slice is offline and synthetic: no production entrypoint constructs the runtime, no live PF or ARP operation exists in it, and the installed `--mach-service` read-only behavior is unchanged. Links: [read-only gate](XPC_CONTROL_REQUEST_GATE.md), [bootstrap handoff](TRUSTED_BOOTSTRAP_HANDOFF.md), [helper bootstrap contract](INSTALLED_HELPER_BOOTSTRAP.md), [pre-mutation gate](HELPER_PRE_MUTATION_GATE.md).
+
+## Runtime boundary decision
+
+**The installed privileged service remains one system-library-only executable.** The reviewed service artifact is `llm_interceptor_read_only_helper` (staged as `llm_interceptor_helper`), and it stays the only executable that may run privileged with the helper identity. The Homebrew-Qt-linked `llm_interceptor_helper` build and every class compiled from `interceptor_network` stay out of the root process permanently; the runtime dependency gate in the [trust-boundary doc](GUI_HELPER_TRUST_BOUNDARY.md#helper-runtime-dependency-gate) is the enforcement check.
+
+**How one executable will own lease, event loop, watchdog, and journals.** The control transport is already Qt-free: `HelperStateDirectory`, `LaunchdMachServiceBootstrap`, `MachServicePeerAuthenticator`, `XpcControlRequestGate`, and `XpcReadOnlyServiceListener` live in `interceptor_read_only_xpc` and link only Apple system libraries. That library is the permanent home of the installed endpoint: its owner loop is a dispatch queue (`dispatch_main()`), not a Qt event loop. The lifecycle session semantics (state machine, dispatch, watchdog, lease, journals) are currently the reviewed Qt composition in `interceptor_network` (`NetworkSession`, `HelperDispatcher`, `LeasedHelperHost`, `HelperWatchdog`, `HostSessionLease`, the PF journals). The resolution is contract-first, port-later:
+
+1. This increment fixes the contract and startup order in this document and implements them offline in `HelperLifecycleRuntime` (Qt, `interceptor_network`), which composes the reviewed Qt classes behind injectable seams. It is a fixture: it proves the ordering, state reporting, one-time capability, and cleanup-retention semantics with synthetic operations and is reachable only from tests. Nothing is silently added to the installed executable's behavior.
+2. A later, separately reviewed backlog B/C increment extracts the Qt-free decision core of the lifecycle into `interceptor_read_only_xpc`, replacing only the Qt-owned plumbing (QTimer watchdog with a dispatch source timer, Qt strings with standard-library types) while the transport, authentication, and parsing code is reused. The installed executable will then own the lease, owner loop, watchdog, and journals end-to-end. Extraction must reuse, not duplicate, the semantics recorded here, and the behavioral tests written against the fixture must pass unchanged against the extracted owner. Until that increment passes its dependency and identity reviews, the installed service keeps read-only protocol v1 only.
+3. The fixture parsing being compiled into the installed binary is not enablement: `XpcControlRequestGate` only reaches the session-control grammar through a constructor-selected `SyntheticLifecycle` mode, and the installed `--mach-service` path constructs the gate in `ReadOnly` mode. This follows the existing precedent — the synthetic `start` fixture was already compiled into the system-library-only service with no way to reach it.
+
+**The Qt host's remaining role.** Until step 2 lands, `LeasedHelperHost` and its Unix-socket listener remain the offline behavioral reference of the same semantics ("lost-peer watchdog, Stop retry, cleanup pending" are the same `NetworkSession` code paths in both). They are not installed and are not the reviewed service artifact.
+
+**The `--process` entrypoint.** The Qt-linked `--process --state-dir ... --bootstrap-fd ...` entrypoint keeps failing closed with `production_peer_authenticator_unavailable` and must not be extended. It may be removed only at backlog A's done-when: when the authenticated production path exists — i.e. the installed system-library-only lifecycle owner serves the authenticated Start itself — at which point `--process` is replaced by that path rather than merely disabled. The `--check-state-dir` and read-only `--mach-service` modes are unaffected by this decision.
+
+## Process startup order (fixed)
+
+One installed-service-shaped process runs the following order, all on its owner loop. A later step never starts before every earlier step reports success; a failed step reports the true state and retains every cleanup obligation acquired so far.
+
+1. **Authenticate handoff.** Perform the trusted rendezvous and authenticate the connected GUI peer (production: `receiveTrustedBootstrapHandoff` with a code-signature authenticator over the rendezvous socket; the fixture injects this step). UID/GID alone, or identity fields inside the handoff frame, are insufficient. The connected socket is authenticated and closed by this step.
+2. **Validate and freeze the snapshot.** The handoff's `SessionSnapshot` is reconstructed with `SessionSnapshot::create` and becomes the immutable permitted snapshot; the one-time 32-byte probe secret is consumed by the operations assembly and wiped. No later request can change or extend the frozen snapshot; a Start never carries snapshot data.
+3. **Acquire the lease and recover journals.** Acquire the exclusive host lease against the validated state-directory descriptor (the lease, both PF journals, and the directory must share one canonical directory inode), then recover the durable PF anchor and enable-reference journals. Pending obligations (e.g. an unresolved `release_needed` reference) block readiness fail-closed: the process reports `recovery_pending`, rejects Start, and never runs an operation factory. The obligations remain owned by the journal recovery path for explicit reconciliation.
+4. **Confirm listener readiness.** Obtain fresh listener-readiness proof from the injected probe. The snapshot's historical `proxyReady` evidence is never authority for this step.
+5. **Start synthetic/injected operations, then expose the control endpoint, then release the capability.** In this order per session: the authenticated Start dispatches the composed synthetic operations; the process reports `active` and returns the session handle (`session_id` plus the one-time `session_capability`) only after the owned operations completed and the dispatcher verifies the session state; the control endpoint then serves Heartbeat and Stop for the bound peer on the same owner loop until the session is Idle. Before that point every session-bound command fails binding.
+
+The runtime exposes this as `HelperLifecycleRuntime::initialize()` (steps 1–4 plus endpoint-ready state) and `handleControlRequest()` (step 5). Heartbeats and Stops are processed on the same owner loop that started the operations; there is no second loop and no cross-thread dispatch.
+
+## Session control protocol v1 (fixture surface)
+
+All requests and replies are XPC dictionaries on the fixed service `org.local-llm-interceptor.helper`. The sender is authenticated per message by the same gate that the read-only protocol uses, before any field is read. Read-only protocol v1 is unchanged: `probe` and `status` accept exactly one `operation` key with the same fixed replies as today, the installed listener caps stay as documented, and the read-only adapter never returns a capability or state-changing field. The session-control grammar below is reachable only through the gate's constructor-opt-in `SyntheticLifecycle` mode used by tests.
+
+### Limits (field level)
+
+| Field | Type | Requirement |
+| --- | --- | --- |
+| `operation` | string | 1–16 bytes; `start`, `heartbeat`, `stop` (probe/status unchanged) |
+| `protocol_version` | uint64 | exactly `1` |
+| `session_id` | string | 1–48 bytes, ASCII `[A-Za-z0-9_-]`; heartbeat/stop only |
+| `session_capability` | data | exactly 32 bytes; heartbeat/stop only |
+
+Exact key counts: a start is exactly `operation` + `protocol_version`; a heartbeat or stop is exactly those plus `session_id` + `session_capability`. Any other key, missing key, wrong type, or out-of-limit value is rejected with no reply, following the read-only fail-closed convention. Extra keys exist only as parser rejection tests: the session-control surface carries no snapshot, anchor, path, timestamp, or body field. Requests carry no timestamps of any kind: the session clock is exclusively the helper's injected monotonic clock, and the dispatcher rejects any regressed reading.
+
+There is no per-session payload in a request. The immutable snapshot crossed the boundary once, in the handoff (step 1–2); Start references it implicitly, so there is nothing to desynchronize and no replayable snapshot state.
+
+### Reply shape (bounded)
+
+| Key | Type | Rule |
+| --- | --- | --- |
+| `ok` | bool | true only when the requested transition is achieved and verified |
+| `protocol_version` | uint64 | exactly `1` |
+| `state` | string | fixed vocabulary, at most 16 bytes, always present |
+| `session_id` | string | present only in an accepted Start reply and an accepted Heartbeat echo |
+| `session_capability` | data | exactly 32 bytes; present only in the accepted Start reply |
+| `reason` | string | fixed vocabulary, at most 64 bytes; present only when `ok` is false |
+
+State vocabulary: `uninitialized`, `init_failed`, `recovery_pending`, `ready`, `active`, `cleanup_pending`, `stopped`. Reason vocabulary: `lifecycle_not_initialized`, `lifecycle_not_ready`, `lifecycle_recovery_pending`, `lifecycle_stopped`, `lifecycle_owner_thread_required`, `duplicate_start`, `control_peer_mismatch`, `session_binding_mismatch`, `session_start_failed`, `session_start_unverified`, `session_credentials_unavailable`, `session_start_unavailable`, `heartbeat_rejected`, `cleanup_pending`, `operation_unsupported`, `clock_unavailable`. These strings are the complete diagnostic surface; no prompt data, secret, signature metadata, or untrusted string is reflected into a reply.
+
+`XpcSessionControlReply` carries these fields with the same bounds in code, `encodeXpcSessionControlReply` enforces every bound before encoding, and `wipeXpcSessionControlReply` zeroes the capability bytes for whichever side temporarily retained them. In this slice the encoder is exercised only through the fixture; the installed read-only adapter never constructs a session-control reply.
+
+### Deadlines and cadence
+
+Client deadlines match the read-only client: 1–5000 ms per request, 1500 ms default. Heartbeat gaps must stay below the 5000 ms session watchdog timeout; 2500 ms or less is recommended. The watchdog tick stays at 250 ms (existing `HelperWatchdog` default). All transitions are synchronous on the owner loop, so a reply always names the state after the requested transition; there are no pending intermediate `starting`/`cleaning` reply states.
+
+## Ownership table
+
+| Resource | Owner | Lifetime / wipe rule |
+| --- | --- | --- |
+| State-directory descriptor | The process entrypoint, opened by the validated state-directory check | Borrowed (duplicated, never consumed) by the lease, both PF journals, and any command listener; closed by the entrypoint owner at exit; one canonical inode for all users |
+| Rendezvous socket descriptor | The handoff receiver (helper side) | Authenticated, read once, closed by the receiver; never left open into the session phase |
+| 32-byte probe secret | The trusted bootstrap handoff result, then the operations factory | Single retained copy owned by the factory, wiped after assembly; never logged, never in a reply |
+| 32-byte session capability | Generated by the helper (`HelperSessionIdentity`); dispatcher holds the control copy; the host holds one client copy | Client copy is released exactly once in the accepted Start reply and wiped by the runtime; the dispatcher's copy is wiped at Idle or destruction; constant-time comparison on every use; the GUI must wipe its copy at session end |
+| Session id | Helper-generated, echoed in replies | Not secret and never authorization by itself; binding requires the capability |
+| Session handle returned to the GUI | `session_id` + `session_capability` pair | The only authority for Heartbeat/Stop; never repeated, never re-issued after a stop |
+| Durable journals | The journal recovery path for the leased directory | Survive process restart; unresolved obligations are explicit state, not silent cleanup |
+
+## Behavior decisions
+
+- **One session per process.** The runtime accepts exactly one authenticated Start. After a verified clean stop the capability is revoked by the host, the phase is terminal (`stopped`), and a new Start is rejected (`lifecycle_stopped`); a post-stop process exits and the next session comes from a fresh process bootstrap. This bounds replay and keeps one lease, one snapshot, and one capability set per process.
+- **Duplicate Start.** An authenticated Start while a session is starting, active, or cleanup-pending is rejected with `ok=false`, the current state, and reason `duplicate_start`. It never returns a second capability and never restarts operations.
+- **Wrong peer.** A sender that fails the gate's code-signature check is rejected before parsing, with no reply. A sender that authenticates against the pinned requirement but does not match the peer bound at the bootstrap rendezvous is rejected with `control_peer_mismatch` and no state change. Kernel UID equality alone is not peer identity.
+- **Lost client.** When heartbeats stop for longer than the watchdog timeout, the owner-loop watchdog stops the session; if cleanup fails partway, the phase is `cleanup_pending` with the journal obligation retained. The control endpoint keeps accepting commands while cleanup is pending.
+- **Stop retry.** A bound Stop re-drives cleanup while `cleanup_pending` and replies `ok=false`/`cleanup_pending` until cleanup actually completes. Only a verified transition to Idle replies `ok=true`/`stopped`. An empty command response never proves cleanup success; the existing journal semantics govern the session.
+- **Stop replay after a verified stop.** After a clean stop the capability is revoked, so any later session-bound command fails `session_binding_mismatch`. Losing the terminal Stop reply is recoverable operationally through the read-only endpoint and the durable state, not by weakening the capability rule.
+- **Heartbeats while cleanup is pending** are rejected (`heartbeat_rejected`, state `cleanup_pending`); they are not treated as authority to resume or hold the session.
+- **Process restart with pending cleanup.** The step-3 journal recovery reports the pending obligation: phase `recovery_pending`, Start rejected, no operations composed. The orphaned session's capability died with the process and is never persisted, so nothing can re-authenticate into it. Recovery of the owned state is an explicit operator/recovery path (backlog C), and a process cannot report ready above unresolved obligations.
+- **Verification bar for `active`.** The runtime reports `active` only when the dispatched operations completed and the dispatcher confirms the session state. Synthetic operations make this a real ordering proof, not a network proof; live readiness remains the exclusive job of the fresh revalidation in the [pre-mutation gate](HELPER_PRE_MUTATION_GATE.md), which this slice does not wire to any live backend.
+
+## What this slice does not do
+
+It grants no live redirection authority, wires no production Start handler, opens no rendezvous in the GUI, changes no probe/status code path, and installs nothing. `HelperLifecycleRuntime`, its seams, and the gate's `SyntheticLifecycle` grammar exist for the offline lifecycle tests (duplicate Start, wrong peer, lost client, Stop retry, restart with pending cleanup, wrong-thread destruction, factory and journal-boundary failures). The testing and review roles own those proofs; this document is the contract they test against.

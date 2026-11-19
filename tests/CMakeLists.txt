@@ -356,3 +356,22 @@ if(APPLE)
     add_test(NAME m6_arp_lab_probe_cli COMMAND m6_arp_lab_probe_cli_tests)
     set_tests_properties(m6_arp_lab_probe_cli PROPERTIES TIMEOUT 60)
 endif()
+
+qt_add_executable(m6_helper_lifecycle_runtime_tests M6HelperLifecycleRuntimeTests.cpp)
+target_link_libraries(m6_helper_lifecycle_runtime_tests PRIVATE interceptor_network Qt6::Test)
+add_test(NAME m6_helper_lifecycle_runtime COMMAND m6_helper_lifecycle_runtime_tests)
+set_tests_properties(m6_helper_lifecycle_runtime PROPERTIES TIMEOUT 90)
+
+qt_add_executable(m6_xpc_session_control_grammar_tests M6XpcSessionControlGrammarTests.cpp)
+target_link_libraries(m6_xpc_session_control_grammar_tests PRIVATE
+    interceptor_read_only_xpc Qt6::Test)
+add_test(NAME m6_xpc_session_control_grammar
+    COMMAND m6_xpc_session_control_grammar_tests)
+set_tests_properties(m6_xpc_session_control_grammar PROPERTIES TIMEOUT 30)
+
+qt_add_executable(m6_xpc_session_control_reply_tests M6XpcSessionControlReplyTests.cpp)
+target_link_libraries(m6_xpc_session_control_reply_tests PRIVATE
+    interceptor_read_only_xpc Qt6::Test)
+add_test(NAME m6_xpc_session_control_reply
+    COMMAND m6_xpc_session_control_reply_tests)
+set_tests_properties(m6_xpc_session_control_reply PROPERTIES TIMEOUT 30)

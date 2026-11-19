@@ -77,6 +77,10 @@ class LeasedHelperHost final {
     bool start(QString *error = nullptr);
     bool stop(QString *error = nullptr);
     bool dispatchOne(int connectedSocketFd, QString *error = nullptr);
+    // Direct authenticated dispatch for a pre-built command, used by the lifecycle runtime fixture
+    // in place of a socket transport. Same owner-thread and lifecycle rules as dispatchOne().
+    bool dispatchControlCommand(const VerifiedPeer &transportPeer, const HelperCommand &command,
+                                QString *error = nullptr);
     std::optional<HelperHostCredentials> takeCredentials();
     bool watchdogRunning() const;
     NetworkSession::State state() const;

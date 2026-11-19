@@ -53,6 +53,8 @@ The integration review must explicitly cover operation order, upstream loop avoi
 
 **Done when:** fake-backed tests prove no mutation before the fresh gate, narrow ownership, correct reverse-order cleanup, and resumable recovery for every uncertain step. Live behavior remains gated by D.
 
+**Recorded first increment (offline, factory seam only):** The Qt-free `PosixSpawnChildProcess` engine and the spawn-backed typed-command child factories now exist beside the QProcess runners (the runner, coordinator, and journal layers are reused unchanged), `ArpRedirectRefresher` grows the one-shot probe into the bounded session refresh loop described above, and `ScopedSessionSystemOperations` (via `scopedSessionOperationsFactory`) composes gate → recovery/lease → journaled PF reference capture → anchor install with ownership/attachment authorization → active-evaluation verification before ARP → refresh loop, with teardown in the existing reverse order. All collaborators are injectable; no production entrypoint constructs the factory, the lifecycle runtime remains a fixture, and `PfAnchorRecoverySystemOperations` is no longer `final` so the composed object can own its collaborators. The failure matrix, child-process integration test, and live adapter observations remain open per the [integration record](SCOPED_OPERATION_INTEGRATION.md).
+
 ## D. Bounded lab verification
 
 Before a session, obtain fresh interface and device identities, direct-route and neighbor state, Ollama reachability, current PF rules/references, app build hash, and a saved rollback baseline. The historical addresses and MACs in older notes are examples, not defaults. Use synthetic HTTP and a mock upstream first; retain no real prompt bodies or credentials in committed evidence.

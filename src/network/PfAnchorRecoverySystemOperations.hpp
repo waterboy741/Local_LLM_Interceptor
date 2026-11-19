@@ -16,7 +16,10 @@ namespace interceptor {
 // The startup coordinator must use a distinct owner because recovery consumes that owner.
 // The host lease, PF-reference journal, and anchor journal must all use the same canonical private
 // directory inode; this adapter cannot verify that deployment invariant.
-class PfAnchorRecoverySystemOperations final : public SystemOperations {
+// The real scoped session execution derives from this class so the composed object can own its
+// runners, journals, coordinators, and adapters (base methods remain the journaled path); a
+// derived class must not call the base's SystemOperations methods on itself.
+class PfAnchorRecoverySystemOperations : public SystemOperations {
   public:
     PfAnchorRecoverySystemOperations(
         SystemOperations &delegate, const HostSessionLease &hostLease,

@@ -34,6 +34,8 @@ The fixture has no session payload and defines no production Start format. A lif
 
 **Gate:** a one-client request to the unchanged Ollama address is observed by the proxy and Ollama, with an unmodified response and no unrelated traffic captured. Stop restores the client neighbor mapping and removes only owned PF state.
 
+Package C's first offline increment now exists behind the lifecycle's operations-factory seam: a Qt-free `PosixSpawnChildProcess` engine (no QProcess in a root process), spawn-backed typed-command children reusing the reviewed runner/coordinator/journal layers, the bounded session ARP refresh loop (`ArpRedirectRefresher`), and the composed `ScopedSessionSystemOperations` that orders fresh gate → recovery/lease → journaled PF reference → owned-anchor install → active-evaluation verification → ARP redirect, with reverse-order teardown. All adapters are injectable and nothing production-wired is live yet; see the [scoped integration record](m6/SCOPED_OPERATION_INTEGRATION.md). The lifecycle runtime remains a fixture: wired Start dispatch and GUI integration are the next enablement slice.
+
 ## C. Staged lab acceptance
 
 Use a fresh observation of `en0`, client/server addresses and MACs, direct-route/neighbor state, Ollama reachability, and PF status. Record sanitized results only; do not commit prompts, credentials, packet captures, or machine-specific configuration.

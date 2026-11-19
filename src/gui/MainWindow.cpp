@@ -152,6 +152,34 @@ QString jsonDiff(const QByteArray &original, const QByteArray &edited) {
 }
 } // namespace
 
+namespace {
+QString describeSessionClientStatus(XpcSessionControlClientStatus status) {
+    switch (status) {
+    case XpcSessionControlClientStatus::Success:
+        return "succeeded";
+    case XpcSessionControlClientStatus::InvalidTimeout:
+        return "invalid request timeout";
+    case XpcSessionControlClientStatus::InvalidRequest:
+        return "the session request is incomplete";
+    case XpcSessionControlClientStatus::InvalidPeerRequirement:
+        return "helper identity is not configured";
+    case XpcSessionControlClientStatus::ConnectionFailed:
+        return "the helper service could not be reached";
+    case XpcSessionControlClientStatus::PeerVerificationSetupFailed:
+        return "helper identity verification could not be set up";
+    case XpcSessionControlClientStatus::PeerIdentityMismatch:
+        return "the helper identity does not match the configured requirement";
+    case XpcSessionControlClientStatus::TimedOut:
+        return "the helper did not answer in time";
+    case XpcSessionControlClientStatus::ServiceUnavailable:
+        return "the helper service is not installed or not running";
+    case XpcSessionControlClientStatus::InvalidReply:
+        return "the helper reply did not match the session-control contract";
+    }
+    return "unknown failure";
+}
+} // namespace
+
 MainWindow::MainWindow(SessionController *controller, QWidget *parent)
     : MainWindow(
           controller,
@@ -242,6 +270,7 @@ MainWindow::MainWindow(SessionController *controller,
     auto *startProxy = new QPushButton("Start Observe proxy", panel);
     startProxy->setObjectName("startObserveButton");
     startProxy->setEnabled(false);
+    explicitProxyStart_ = startProxy;
     layout->addWidget(startProxy);
     auto *helperRow = new QWidget(panel);
     auto *helperLayout = new QHBoxLayout(helperRow);
@@ -825,52 +854,52 @@ MainWindow::MainWindow(SessionController *controller,
         *displayedRequest = 0;
         summary->setText("Replay cleared.");
     });
-    connect(startProxy, &QPushButton::clicked, this,
-            [this, startProxy, applySettings, historyLimit, historyMemory] {
-                if (!applySettings())
+    connect(
+        startProxy, &QPushButton::clicked, this,
+        [this, startProxy, applySettings, historyLimit, historyMemory] {
+            if (!applySettings())
+                return;
+            const auto config = controller_->config();
+            if (!config)
+                return;
+            ProxyOptions options;
+            options.listenPort = listenPort_->value();
+            options.maxHistory = static_cast<std::size_t>(historyLimit->value());
+            options.maxHistoryBytes =
+                static_cast<std::size_t>(historyMemory->value()) * 1024 * 1024;
+            // A first Ollama request may load the model before sending response headers.
+            options.timeoutMs = 120000;
+            const bool local = config->interfaceName.isEmpty();
+            if (local) {
+                options.listenAddress = "127.0.0.1";
+            } else {
+                const auto address = usableInterfaceIPv4(config->interfaceName);
+                if (!address) {
+                    status_->setText("The selected interface is inactive or has no usable "
+                                     "IPv4 address. Refresh interfaces and try again.");
                     return;
-                const auto config = controller_->config();
-                if (!config)
-                    return;
-                ProxyOptions options;
-                options.listenPort = listenPort_->value();
-                options.maxHistory = static_cast<std::size_t>(historyLimit->value());
-                options.maxHistoryBytes =
-                    static_cast<std::size_t>(historyMemory->value()) * 1024 * 1024;
-                // A first Ollama request may load the model before sending response headers.
-                options.timeoutMs = 120000;
-                const bool local = config->interfaceName.isEmpty();
-                if (local) {
-                    options.listenAddress = "127.0.0.1";
-                } else {
-                    const auto address = usableInterfaceIPv4(config->interfaceName);
-                    if (!address) {
-                        status_->setText("The selected interface is inactive or has no usable "
-                                         "IPv4 address. Refresh interfaces and try again.");
-                        return;
-                    }
-                    options.listenAddress = *address;
-                    options.allowedClientIp = config->clientIp;
                 }
-                if (proxy_.start(*config, options)) {
-                    const QString url =
-                        QString("http://%1:%2").arg(options.listenAddress).arg(proxy_.listenPort());
-                    status_->setText(
-                        local ? QString("Proxy listening at %1 — set the local client's "
-                                        "Ollama base URL to this address.")
-                                    .arg(url)
-                              : QString("Proxy listening at %1 — set the remote client's "
-                                        "Ollama base URL to this Mac LAN address. Requests "
-                                        "sent to the unchanged server address are not "
-                                        "redirected.")
-                                    .arg(url));
-                    startProxy->setEnabled(false);
-                    listenPort_->setEnabled(false);
-                } else
-                    status_->setText(
-                        "Could not start the proxy. Clear any loaded replay, then check "
-                        "the selected endpoint and listener port.");
-            });
+                options.listenAddress = *address;
+                options.allowedClientIp = config->clientIp;
+            }
+            if (proxy_.start(*config, options)) {
+                const QString url =
+                    QString("http://%1:%2").arg(options.listenAddress).arg(proxy_.listenPort());
+                status_->setText(local
+                                     ? QString("Proxy listening at %1 — set the local client's "
+                                               "Ollama base URL to this address.")
+                                           .arg(url)
+                                     : QString("Proxy listening at %1 — set the remote client's "
+                                               "Ollama base URL to this Mac LAN address. Requests "
+                                               "sent to the unchanged server address are not "
+                                               "redirected.")
+                                           .arg(url));
+                startProxy->setEnabled(false);
+                listenPort_->setEnabled(false);
+            } else
+                status_->setText("Could not start the proxy. Clear any loaded replay, then check "
+                                 "the selected endpoint and listener port.");
+        });
     connect(controller_, &SessionController::stateChanged, this,
             [this, startProxy, displayedRequest, summary](SessionController::State state) {
                 if (state == SessionController::State::Stopping) {
@@ -884,7 +913,7 @@ MainWindow::MainWindow(SessionController *controller,
                     summary->setText("No retained requests");
                 }
                 startProxy->setEnabled(state == SessionController::State::Ready &&
-                                       proxy_.listenPort() == 0);
+                                       proxy_.listenPort() == 0 && transparentSessionId_.isEmpty());
                 listenPort_->setEnabled(state == SessionController::State::Idle);
             });
     auto *about = menuBar()->addAction("About / License");
@@ -949,11 +978,254 @@ MainWindow::MainWindow(SessionController *controller,
                 status_->setText(idle ? "Idle — no network changes"
                                       : "Configuration prepared — no network changes");
             });
+    auto *transparentPage = new QWidget(tabs);
+    auto *transparentLayout = new QVBoxLayout(transparentPage);
+    tabs->addTab(transparentPage, "Transparent session");
+    transparentLayout->addWidget(new QLabel(
+        "Start requests an authenticated scoped PF/ARP session over the fixed privileged XPC "
+        "service. It needs the installed, operator-configured helper; when the helper is absent "
+        "or its identity is not configured, the request fails closed and nothing is mutated.",
+        transparentPage));
+    transparentSessionStart_ = new QPushButton("Start Transparent session", transparentPage);
+    transparentSessionStart_->setObjectName("startTransparentButton");
+    transparentSessionStop_ = new QPushButton("Stop Transparent session", transparentPage);
+    transparentSessionStop_->setObjectName("stopTransparentButton");
+    transparentSessionStop_->setEnabled(false);
+    transparentSessionStatus_ = new QLabel("No transparent session.", transparentPage);
+    transparentSessionStatus_->setObjectName("transparentSessionStatus");
+    transparentSessionStatus_->setWordWrap(true);
+    transparentLayout->addWidget(transparentSessionStart_);
+    transparentLayout->addWidget(transparentSessionStop_);
+    transparentLayout->addWidget(transparentSessionStatus_);
+    transparentHeartbeatTimer_ = new QTimer(this);
+    transparentHeartbeatTimer_->setObjectName("transparentHeartbeatTimer");
+    transparentHeartbeatTimer_->setInterval(2000);
+    connect(transparentHeartbeatTimer_, &QTimer::timeout, this, [this] {
+        if (transparentSessionId_.isEmpty() || transparentHeartbeatInFlight_)
+            return;
+        transparentHeartbeatInFlight_ = true;
+        const QString sessionId = transparentSessionId_;
+        const QByteArray capability = transparentSessionCapability_;
+        const quint64 generation = ++transparentRequestGeneration_;
+        auto *watcher = new QFutureWatcher<XpcSessionControlClientResult>(this);
+        connect(watcher, &QFutureWatcher<XpcSessionControlClientResult>::finished, this,
+                [this, watcher, generation] {
+                    const auto result = watcher->result();
+                    watcher->deleteLater();
+                    if (generation != transparentRequestGeneration_)
+                        return;
+                    transparentHeartbeatInFlight_ = false;
+                    if (result.succeeded() && result.ok && result.state == "active")
+                        return;
+                    if (result.succeeded()) {
+                        transparentSessionStatus_->setText(
+                            QString("Helper reports the session is %1; attempting to stop it.")
+                                .arg(result.state));
+                        beginStopTransparentSession(false);
+                    } else {
+                        transparentSessionStatus_->setText(
+                            QString("Heartbeat could not reach a verified helper session (%1). "
+                                    "The helper watchdog stops its side; stop here to force a "
+                                    "final stop attempt.")
+                                .arg(describeSessionClientStatus(result.status)));
+                        finishTransparentSession();
+                    }
+                });
+        watcher->setFuture(QtConcurrent::run(
+            [sessionId, capability, requirement = loadHelperIdentity().requirement] {
+                return XpcSessionControlClient::heartbeat(sessionId, capability, requirement);
+            }));
+    });
+    connect(transparentSessionStart_, &QPushButton::clicked, this,
+            [this] { beginStartTransparentSession(); });
+    connect(transparentSessionStop_, &QPushButton::clicked, this,
+            [this] { beginStopTransparentSession(false); });
     setCentralWidget(panel);
     resize(680, 660);
 }
+void MainWindow::beginStartTransparentSession() {
+    if (!transparentSessionId_.isEmpty())
+        return; // An active or cleanup-pending session already owns this window.
+    const auto config = controller_->config();
+    if (!config) {
+        transparentSessionStatus_->setText(
+            "Prepare an interface configuration first; the transparent session reuses it.");
+        return;
+    }
+    if (config->interfaceName.isEmpty()) {
+        transparentSessionStatus_->setText(
+            "Transparent sessions need a selected physical interface; loopback-only explicit "
+            "configurations cannot redirect.");
+        return;
+    }
+    const bool proxyAlreadyRunning = proxy_.listenPort() != 0;
+    if (proxyAlreadyRunning && !proxy_.transparentReadiness()) {
+        transparentSessionStatus_->setText(
+            "An explicit proxy session is active. Stop it before starting a transparent one.");
+        return;
+    }
+    const auto address = usableInterfaceIPv4(config->interfaceName);
+    if (!address) {
+        transparentSessionStatus_->setText(
+            "The selected interface is inactive or has no usable IPv4 address.");
+        return;
+    }
+    if (!proxyAlreadyRunning) {
+        ProxyOptions options;
+        options.transparentRedirect = true;
+        options.listenAddress = *address;
+        options.allowedClientIp = config->clientIp;
+        options.listenPort = listenPort_->value();
+        options.timeoutMs = 120000;
+        if (!proxy_.start(*config, options)) {
+            transparentSessionStatus_->setText(
+                "Could not start the transparent listener. Clear any loaded replay and retry.");
+            return;
+        }
+    }
+    const auto readiness = proxy_.transparentReadiness();
+    const auto secret = proxy_.transparentProbeSecret();
+    if (!readiness || !secret || secret->size() != 32 ||
+        !proxy_.isTransparentReadinessCurrent(*readiness) || !readiness->isCurrent()) {
+        transparentSessionStatus_->setText(
+            "The transparent listener is not bound with a current readiness token.");
+        return;
+    }
+    const HelperIdentity identity = loadHelperIdentity();
+    if (identity.status != HelperIdentityStatus::Loaded || identity.requirement.isEmpty()) {
+        transparentSessionStatus_->setText(
+            "Helper identity is not configured; transparent start fails closed.");
+        return;
+    }
+    XpcSessionControlClientTuple tuple;
+    tuple.interfaceName = readiness->interfaceName();
+    tuple.clientIpv4 = readiness->allowedClientIp();
+    tuple.upstreamIpv4 = readiness->upstreamServerIp();
+    tuple.listenAddress = readiness->listenAddress();
+    tuple.upstreamPort = static_cast<quint16>(readiness->upstreamServerPort());
+    tuple.listenerPort = static_cast<quint16>(readiness->listenerPort());
+
+    transparentSessionStatus_->setText("Requesting a transparent session from the helper…");
+    transparentSessionStart_->setEnabled(false);
+    const quint64 generation = ++transparentRequestGeneration_;
+    auto *watcher = new QFutureWatcher<XpcSessionControlClientResult>(this);
+    connect(watcher, &QFutureWatcher<XpcSessionControlClientResult>::finished, this,
+            [this, watcher, generation] {
+                watcher->deleteLater();
+                const auto result = watcher->result();
+                if (generation != transparentRequestGeneration_) {
+                    return; // A newer stop/start owns this window's session view.
+                }
+                if (result.succeeded() && result.ok && result.state == "active" &&
+                    result.sessionCapability.size() == XpcSessionControlClient::capabilityBytes &&
+                    !result.sessionId.isEmpty()) {
+                    transparentSessionId_ = result.sessionId;
+                    transparentSessionCapability_ = result.sessionCapability;
+                    transparentSessionStatus_->setText(
+                        QString("Transparent session active — the helper owns the scoped PF/ARP "
+                                "operations and verifies heartbeats. Session %1.")
+                            .arg(transparentSessionId_));
+                    transparentSessionStop_->setEnabled(true);
+                    explicitProxyStart_->setEnabled(false);
+                    transparentHeartbeatInFlight_ = false;
+                    transparentHeartbeatTimer_->start();
+                    return;
+                }
+                QString message;
+                if (!result.succeeded()) {
+                    message = describeSessionClientStatus(result.status);
+                } else if (!result.ok || result.reason.isEmpty()) {
+                    message =
+                        QString("Helper rejected the session start (state %1).").arg(result.state);
+                } else {
+                    message = QString("Helper rejected the session start (state %1, %2).")
+                                  .arg(result.state)
+                                  .arg(result.reason);
+                }
+                transparentSessionStatus_->setText(message);
+                finishTransparentSession();
+            });
+    watcher->setFuture(
+        QtConcurrent::run([tuple, secret = *secret, requirement = identity.requirement] {
+            return XpcSessionControlClient::start(tuple, secret, requirement);
+        }));
+}
+
+void MainWindow::beginStopTransparentSession(bool blocking) {
+    if (transparentSessionId_.isEmpty())
+        return;
+    transparentHeartbeatTimer_->stop();
+    transparentSessionStop_->setEnabled(false);
+    transparentSessionStatus_->setText(blocking ? "Stopping transparent session…" : "Stopping…");
+    const QString sessionId = transparentSessionId_;
+    const QByteArray capability = transparentSessionCapability_;
+    const HelperIdentity identity = loadHelperIdentity();
+    if (blocking) {
+        ++transparentRequestGeneration_;
+        const auto result =
+            XpcSessionControlClient::stop(sessionId, capability, identity.requirement, 5000);
+        handleStopReply(result);
+        return;
+    }
+    const quint64 generation = ++transparentRequestGeneration_;
+    auto *watcher = new QFutureWatcher<XpcSessionControlClientResult>(this);
+    connect(watcher, &QFutureWatcher<XpcSessionControlClientResult>::finished, this,
+            [this, watcher, generation] {
+                watcher->deleteLater();
+                if (generation != transparentRequestGeneration_)
+                    return;
+                handleStopReply(watcher->result());
+            });
+    watcher->setFuture(
+        QtConcurrent::run([sessionId, capability, requirement = identity.requirement] {
+            return XpcSessionControlClient::stop(sessionId, capability, requirement);
+        }));
+}
+
+void MainWindow::handleStopReply(const XpcSessionControlClientResult &result) {
+    if (!result.succeeded()) {
+        transparentSessionStatus_->setText(
+            QString("Stop could not reach a verified helper (%1). The helper watchdog stops its "
+                    "side; keep this window open or retry after the helper recovers.")
+                .arg(describeSessionClientStatus(result.status)));
+        transparentSessionStop_->setEnabled(true); // Stop retries stay available.
+        return;
+    }
+    if (result.state == "cleanup_pending") {
+        transparentSessionStatus_->setText(
+            "Helper reports cleanup obligations are still pending (cleanup_pending); Stop remains "
+            "available for a retry.");
+        transparentSessionStop_->setEnabled(true);
+        return;
+    }
+    const QString stateText = result.ok ? QString("stopped cleanly (state %1).").arg(result.state)
+                                        : QString("stopped with reason %1.").arg(result.reason);
+    transparentSessionStatus_->setText("Transparent session " + stateText);
+    finishTransparentSession();
+}
+
+void MainWindow::finishTransparentSession() {
+    transparentHeartbeatTimer_->stop();
+    transparentHeartbeatInFlight_ = false;
+    for (char &value : transparentSessionCapability_)
+        value = '\0';
+    transparentSessionCapability_.clear();
+    transparentSessionId_.clear();
+    transparentSessionStop_->setEnabled(false);
+    transparentSessionStart_->setEnabled(true);
+    explicitProxyStart_->setEnabled(controller_->state() == SessionController::State::Ready &&
+                                    proxy_.listenPort() == 0);
+}
+
 void MainWindow::closeEvent(QCloseEvent *event) {
     ++helperStatusGeneration_;
+    const bool hadTransparentSession = !transparentSessionId_.isEmpty();
+    if (hadTransparentSession) {
+        beginStopTransparentSession(true);
+        QMessageBox::information(this, "llm_interceptor",
+                                 "Transparent session stop result:\n" +
+                                     transparentSessionStatus_->text());
+    }
     proxy_.stop();
     controller_->stop();
     QMainWindow::closeEvent(event);

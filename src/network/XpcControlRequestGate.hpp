@@ -3,6 +3,7 @@
 #include "MachServicePeerAuthenticator.hpp"
 
 #include <cstddef>
+#include <cstdint>
 
 #include <string>
 #include <vector>
@@ -25,6 +26,7 @@ enum class XpcControlOperation {
 // capability size (HelperSessionIdentity::capabilityRandomBytes, asserted by
 // HelperLifecycleRuntime).
 inline constexpr std::size_t xpcSessionControlRequestFieldCount = 4;
+inline constexpr std::size_t xpcInstalledStartRequestFieldCount = 9;
 inline constexpr std::size_t xpcSessionControlMaximumSessionIdBytes = 48;
 inline constexpr std::size_t xpcSessionControlCapabilityBytes = 32;
 
@@ -34,6 +36,15 @@ struct XpcControlRequest {
     std::string sessionId;
     // Heartbeat/Stop only. Exactly xpcSessionControlCapabilityBytes when parsed.
     std::vector<unsigned char> sessionCapability;
+    // InstalledLifecycle Start only: the versioned fresh listener-verification tuple and the
+    // one-time 32-byte probe secret handed over by the authenticated GUI.
+    std::string sessionInterface;
+    std::string sessionClientIpv4;
+    std::string sessionUpstreamIpv4;
+    std::string sessionListenAddress;
+    uint64_t sessionUpstreamPort = 0;
+    uint64_t sessionListenerPort = 0;
+    std::vector<unsigned char> probeSecret;
 };
 
 // Owns the locally trusted code requirement. Authenticates the sender before
@@ -45,7 +56,11 @@ struct XpcControlRequest {
 // message is borrowed and inspected synchronously.
 class XpcControlRequestGate final {
   public:
-    enum class Mode { ReadOnly, SyntheticLifecycle };
+    // ReadOnly: probe/status only. SyntheticLifecycle: offline fixture grammar (2-key start,
+    // 4-key heartbeat/stop). InstalledLifecycle: the operator-gated production grammar; start
+    // carries the versioned listener-verification tuple plus the one-time probe secret and
+    // nothing else; probe/status shapes are byte-identical in every mode.
+    enum class Mode { ReadOnly, SyntheticLifecycle, InstalledLifecycle };
 
     XpcControlRequestGate(std::string trustedRequirement, XpcPeerCodeSignaturePolicy &policy,
                           Mode mode = Mode::ReadOnly);

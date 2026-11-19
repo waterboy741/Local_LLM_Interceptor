@@ -91,7 +91,12 @@ xpc_object_t XpcReadOnlyControlAdapter::handleMessage(xpc_object_t message) cons
 
 XpcReadOnlyServiceListener::XpcReadOnlyServiceListener(std::string serviceName,
                                                        XpcReadOnlyControlAdapter &adapter)
-    : serviceName_(std::move(serviceName)), adapter_(adapter),
+    : XpcReadOnlyServiceListener(std::move(serviceName),
+                                 static_cast<XpcServiceMessageHandler &>(adapter)) {}
+
+XpcReadOnlyServiceListener::XpcReadOnlyServiceListener(std::string serviceName,
+                                                       XpcServiceMessageHandler &handler)
+    : serviceName_(std::move(serviceName)), handler_(handler),
       queue_(
           dispatch_queue_create("org.local-llm-interceptor.xpc-listener", DISPATCH_QUEUE_SERIAL)),
       callbackGuard_(std::make_shared<CallbackGuard>()) {
@@ -116,7 +121,7 @@ bool XpcReadOnlyServiceListener::start(std::string *error) {
         return fail(error, "xpc_listener_create_failed");
     if (!validServiceName(serviceName_))
         return fail(error, "xpc_listener_service_name_invalid");
-    if (!adapter_.isConfigured())
+    if (!handler_.isConfigured())
         return fail(error, "xpc_listener_trusted_requirement_missing");
 
     __block bool started = false;
@@ -154,7 +159,7 @@ bool XpcReadOnlyServiceListener::startWithAnonymousListenerForTesting(xpc_connec
         cancelAndRelease(listener);
         return fail(error, "xpc_listener_service_name_invalid");
     }
-    if (!adapter_.isConfigured()) {
+    if (!handler_.isConfigured()) {
         cancelAndRelease(listener);
         return fail(error, "xpc_listener_trusted_requirement_missing");
     }
@@ -248,7 +253,7 @@ void XpcReadOnlyServiceListener::handleEvent(xpc_connection_t connection, xpc_ob
         }
         ++peer->messageCount;
         ++messagesReceived_;
-        xpc_object_t reply = adapter_.handleMessage(event);
+        xpc_object_t reply = handler_.handleMessage(event);
         if (reply) {
             xpc_connection_send_message(connection, reply);
             xpc_release(reply);

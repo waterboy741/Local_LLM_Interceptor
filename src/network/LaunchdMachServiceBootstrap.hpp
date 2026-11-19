@@ -11,6 +11,9 @@ inline constexpr char launchdMachServiceName[] = "org.local-llm-interceptor.help
 struct LaunchdMachServiceConfig {
     bool enabled = false;
     std::string trustedPeerRequirement;
+    // Session-control gate. Absent (two-line config) means false: the service stays the
+    // read-only probe/status responder and never constructs the session-control listener.
+    bool sessionControl = false;
 };
 
 // Checks the literal cdhash syntax and compiles it with local Security.framework.

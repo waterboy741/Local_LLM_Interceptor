@@ -14,10 +14,19 @@
 
 namespace interceptor {
 
+// Common responder surface served natively by the listener: authenticated (rejected messages
+// produce no reply at all) and bounded production replies.
+class XpcServiceMessageHandler {
+  public:
+    virtual ~XpcServiceMessageHandler() = default;
+    virtual bool isConfigured() const = 0;
+    virtual xpc_object_t handleMessage(xpc_object_t message) const = 0;
+};
+
 // Creates only fixed, bounded replies to authenticated probe/status requests.
 // The returned XPC object is retained (+1) for the caller; rejected requests
 // receive no reply.
-class XpcReadOnlyControlAdapter final {
+class XpcReadOnlyControlAdapter final : public XpcServiceMessageHandler {
   public:
     explicit XpcReadOnlyControlAdapter(XpcControlRequestGate &gate);
 
@@ -35,6 +44,7 @@ class XpcReadOnlyControlAdapter final {
 class XpcReadOnlyServiceListener final {
   public:
     XpcReadOnlyServiceListener(std::string serviceName, XpcReadOnlyControlAdapter &adapter);
+    XpcReadOnlyServiceListener(std::string serviceName, XpcServiceMessageHandler &handler);
     ~XpcReadOnlyServiceListener();
 
     XpcReadOnlyServiceListener(const XpcReadOnlyServiceListener &) = delete;
@@ -61,7 +71,7 @@ class XpcReadOnlyServiceListener final {
     void stopOnQueue();
 
     const std::string serviceName_;
-    XpcReadOnlyControlAdapter &adapter_;
+    XpcServiceMessageHandler &handler_;
     dispatch_queue_t queue_ = nullptr;
     xpc_connection_t listener_ = nullptr;
     std::vector<PeerConnection> peers_;

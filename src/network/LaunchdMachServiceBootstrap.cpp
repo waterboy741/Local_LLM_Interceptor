@@ -86,8 +86,7 @@ bool parseLaunchdMachServiceConfig(std::string_view contents, LaunchdMachService
     const auto setting = contents.substr(0, newline);
     auto requirement = contents.substr(newline + 1);
     constexpr std::string_view key = "peer-code-requirement=";
-    if ((setting != "enabled=true" && setting != "enabled=false") ||
-        !requirement.starts_with(key) || requirement.find('\n') != std::string_view::npos)
+    if ((setting != "enabled=true" && setting != "enabled=false") || !requirement.starts_with(key))
         return fail(error, "launchd_mach_service_config_format_invalid");
     requirement.remove_prefix(key.size());
     const bool enabled = setting == "enabled=true";
@@ -96,6 +95,28 @@ bool parseLaunchdMachServiceConfig(std::string_view contents, LaunchdMachService
     if (!valid)
         return fail(error, "launchd_mach_service_peer_requirement_invalid");
 
+    if (!enabled)
+        return fail(error, "launchd_mach_service_disabled");
+
+    // Optional, explicitly named third line. Anything else in the third line is invalid so a
+    // stray edit can never silently enable privileged session control.
+    std::string_view sessionControlLine;
+    const auto requirementEnd = requirement.find('\n');
+    if (requirementEnd != std::string_view::npos) {
+        sessionControlLine = requirement.substr(requirementEnd + 1);
+        if (sessionControlLine.find('\n') != std::string_view::npos)
+            return fail(error, "launchd_mach_service_config_format_invalid");
+        requirement.remove_suffix(sessionControlLine.size() + 1);
+        const bool validEnabled = enabled && exactRequirementCompiles(requirement);
+        if (!validEnabled)
+            return fail(error, "launchd_mach_service_peer_requirement_invalid");
+        if (sessionControlLine == "session-control=true")
+            config->sessionControl = true;
+        else if (sessionControlLine == "session-control=false")
+            config->sessionControl = false;
+        else
+            return fail(error, "launchd_mach_service_session_control_line_invalid");
+    }
     if (!enabled)
         return fail(error, "launchd_mach_service_disabled");
     config->enabled = true;

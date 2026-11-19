@@ -33,6 +33,12 @@ Launch and offline tests need no capture privileges; socket-based tests need per
 
 BoundedHistory retains a configured positive maximum row count and limits each summary to 4096 UTF-16 code units. Append/snapshot/clear are mutex-protected. SessionController and GUI are owner-thread objects; immutable configuration copies cross component boundaries. The Observe view retains only matching POST JSON object bodies for configured API paths, with response status and raw body details. Nonmatching bodies are forwarded but never stored. No authentication headers are displayed or retained.
 
+## Transparent session (installed helper required)
+
+The **Transparent session** tab sends an authenticated Start/Heartbeat/Stop session request to the reviewed, operator-configured privileged helper (`llm_interceptor_read_only_helper`) over its fixed XPC service. It starts the in-app transparent listener, hands over a one-time verification tuple and probe secret, and shows the helper's reported lifecycle states (including `cleanup_pending` and stop results) with non-sensitive error messages. Configuration inputs and the explicit proxy stay frozen while a transparent session is active; heartbeats run off the GUI thread; closing the window attempts one final stop and shows the result.
+
+Live transparent operation requires the installed, `session-control=true`-configured helper and remains unverified outside the staged M6 lab; no automated PF/ARP redirection is performed by a plain build and test run. When the helper is absent or its reviewed identity is not configured, Start fails closed and nothing is mutated.
+
 ## Observe relay limits and behavior
 
 Qt HTTP Server supplies HTTP/1.1 parsing and Qt Network supplies upstream connections. Requests are buffered up to the configured body limit (default 1 MiB); decoded body bytes are forwarded unchanged. Response bytes stream incrementally with normalized chunked framing. Hop-by-hop headers, including Connection-nominated fields, are removed; redirects are returned to the client, not followed. This is an explicit reverse proxy: the client changes its base URL. CONNECT and protocol upgrades are rejected. The GUI binds to the selected interface IPv4 and filters accepted sockets by the configured client IPv4. The underlying ProxyServer API also supports loopback-local configuration. Neither configuration redirects traffic automatically.

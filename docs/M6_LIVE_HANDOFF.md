@@ -51,3 +51,7 @@ Use a fresh observation of `en0`, client/server addresses and MACs, direct-route
 ## Next narrow implementation slice
 
 Start with the **installed helper process using synthetic backends** (section A), then wire concrete read-only PF verification. Keep the production, tests, and independent review roles separate per `AGENTS.md`, require three COMPLETE votes, run debug/release/sanitizer checks, and commit/push each accepted slice. Do not start live PF or ARP mutation merely because offline tests pass.
+
+## Enablement record (offline)
+
+Backlog B/C enablement now exists end to end in code: the installed `--mach-service` helper dispatches authenticated installed-grammar Start/Heartbeat/Stop through the Qt-free `InstalledSessionControlCore` behind the explicit `session-control=true` config gate (default configs unchanged), and the GUI drives it with the pinned-helper `XpcSessionControlClient` and a Transparent session tab (start/stop, off-thread heartbeats, contract-state surfacing, config freeze, close-time stop). Recorded detail: [session-control contract](m6/HELPER_SESSION_CONTROL_CONTRACT.md), [bootstrap config format](m6/INSTALLED_HELPER_BOOTSTRAP.md). Real owned operations remain fail-closed (`scoped_backend_unavailable`) until the scoped PF/ARP backend behind `InstalledSessionControlBackend` is ported; no live GroundTruth PF/ARP/LaunchDaemon validation has happened. That is the remaining lab phase.

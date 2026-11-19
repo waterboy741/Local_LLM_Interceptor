@@ -1,4 +1,5 @@
 #include "network/HelperStateDirectory.hpp"
+#include "network/InstalledScopedOperations.hpp"
 #include "network/InstalledSessionControl.hpp"
 #include "network/LaunchdMachServiceBootstrap.hpp"
 #include "network/MachServicePeerAuthenticator.hpp"
@@ -17,7 +18,6 @@
 namespace {
 
 constexpr std::string_view stateDirectory = "/private/var/db/llm_interceptor";
-constexpr int probeTimeoutMs = 2000;
 constexpr uint64_t watchdogTickNanoseconds = 250 * NSEC_PER_MSEC;
 
 int fail(int status, const char *reason) {
@@ -32,39 +32,6 @@ int64_t monotonicNowMs() {
         return 0;
     return static_cast<int64_t>(now.tv_sec) * 1000 + now.tv_nsec / 1000000;
 }
-
-// Production backend for the operator-gated installed service. Listener verification runs the
-// real Qt-free transparent probe; owned scoped operations (PF enable reference, anchor rules,
-// ARP redirect) are intentionally fail-closed until the Qt-side scoped session backend is ported
-// behind this interface, so Start can never report Active today.
-class HelperSessionControlBackend final : public interceptor::InstalledSessionControlBackend {
-  public:
-    bool effectiveRoot() override { return ::geteuid() == 0; }
-
-    bool freshListenerVerification(const interceptor::InstalledSessionTuple &tuple,
-                                   const std::vector<unsigned char> &secret) override {
-        std::string error;
-        return interceptor::verifyTransparentListenerProbe(tuple, secret, probeTimeoutMs, &error);
-    }
-
-    bool startOwnedOperations(const interceptor::InstalledSessionTuple &,
-                              std::string *error) override {
-        if (error)
-            *error = "scoped_backend_unavailable";
-        return false;
-    }
-
-    void heartbeatOwnedOperations() override {}
-
-    bool stopOwnedOperations(bool *cleaned, std::string *error) override {
-        // No owned operations can exist while startOwnedOperations is fail-closed.
-        if (cleaned)
-            *cleaned = true;
-        if (error)
-            error->clear();
-        return true;
-    }
-};
 
 } // namespace
 
@@ -92,9 +59,10 @@ int main(int argc, char *argv[]) {
 
     interceptor::LaunchdMachServiceConfig config;
     const bool configured = interceptor::loadLaunchdMachServiceConfig(fd, &config, &error);
-    ::close(fd);
-    if (!configured)
+    if (!configured) {
+        ::close(fd);
         return fail(6, error.c_str());
+    }
 
     // The listener and its dependencies live beyond the calling thread.
     static interceptor::MacXpcPeerCodeSignaturePolicy policy;
@@ -113,8 +81,15 @@ int main(int argc, char *argv[]) {
         dispatch_main();
     }
 
-    static HelperSessionControlBackend backend;
-    static interceptor::InstalledSessionControlCore core(backend, monotonicNowMs);
+    // The scoped session-control backend owns real PF/ARP operations behind the operator gate.
+    // The trusted root-owned state-directory descriptor stays open for its durable journal.
+    static interceptor::InstalledScopedSpawnCommandIo scopedCommands;
+    static interceptor::InstalledScopedBpfArpIo scopedArp;
+    static interceptor::InstalledScopedSysctlSettingIo scopedSettings;
+    static interceptor::InstalledScopedOperations scopedBackend(scopedCommands, scopedArp,
+                                                                scopedSettings, fd);
+    ::close(fd);
+    static interceptor::InstalledSessionControlCore core(scopedBackend, monotonicNowMs);
     static interceptor::XpcSessionControlServiceAdapter adapter(gate, core);
     static interceptor::XpcReadOnlyServiceListener listener(interceptor::launchdMachServiceName,
                                                             adapter);

@@ -26,6 +26,8 @@ add_library(interceptor_read_only_xpc STATIC
     src/network/HelperStateDirectory.cpp
     src/network/InstalledSessionControl.cpp
     src/network/InstalledSessionControl.hpp
+    src/network/InstalledScopedOperations.cpp
+    src/network/InstalledScopedOperations.hpp
     src/network/LaunchdMachServiceBootstrap.cpp
     src/network/MachServicePeerAuthenticator.cpp
     src/network/PosixSpawnChildProcess.cpp

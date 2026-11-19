@@ -37,7 +37,7 @@ BoundedHistory retains a configured positive maximum row count and limits each s
 
 The **Transparent session** tab sends an authenticated Start/Heartbeat/Stop session request to the reviewed, operator-configured privileged helper (`llm_interceptor_read_only_helper`) over its fixed XPC service. It starts the in-app transparent listener, hands over a one-time verification tuple and probe secret, and shows the helper's reported lifecycle states (including `cleanup_pending` and stop results) with non-sensitive error messages. Configuration inputs and the explicit proxy stay frozen while a transparent session is active; heartbeats run off the GUI thread; closing the window attempts one final stop and shows the result.
 
-Live transparent operation requires the installed, `session-control=true`-configured helper and remains unverified outside the staged M6 lab; no automated PF/ARP redirection is performed by a plain build and test run. When the helper is absent or its reviewed identity is not configured, Start fails closed and nothing is mutated.
+Live transparent operation requires the installed, `session-control=true`-configured helper and remains unverified outside the staged M6 lab; no automated PF/ARP redirection is performed by a plain build and test run. When the helper is absent or its reviewed identity is not configured, Start fails closed and nothing is mutated. The helper's scoped backend performs real PF enable-token capture, owned-anchor rules, kernel forwarding/redirect settings, and ARP redirect/refresh/correction frames only after the operator gate is provisioned — none of that live behavior has yet been validated on real network hardware; M6 lab validation is required first.
 
 ## Observe relay limits and behavior
 

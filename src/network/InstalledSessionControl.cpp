@@ -3,6 +3,7 @@
 
 #include <CommonCrypto/CommonCrypto.h>
 #include <Security/SecRandom.h>
+#include <os/log.h>
 
 #include <arpa/inet.h>
 #include <ifaddrs.h>
@@ -16,6 +17,29 @@
 
 namespace interceptor {
 namespace {
+
+// One bounded, non-sensitive os_log line per rejected session-control reply. Reasons come
+// from the fixed vocabulary (plus the bounded backend failure-code suffix below), so nothing
+// about the sender, tuple, or session identity is logged.
+void logSessionControlRejection(std::string_view reason) {
+    if (reason.empty())
+        return;
+    os_log_error(OS_LOG_DEFAULT, "llm_interceptor.session-control rejected request: %{public}s",
+                 std::string(reason).c_str());
+}
+
+// "session_start_failed" extended with the backend's bounded failure code, truncated to the
+// reply reason cap; only failure-code strings from InstalledScopedOperations reach the suffix.
+std::string startFailedReason(const std::string &backendError) {
+    std::string reason = "session_start_failed";
+    if (!backendError.empty()) {
+        reason += ": ";
+        reason += backendError.substr(0, xpcSessionControlMaximumReasonBytes);
+    }
+    if (reason.size() > xpcSessionControlMaximumReasonBytes)
+        reason.resize(xpcSessionControlMaximumReasonBytes);
+    return reason;
+}
 
 constexpr std::string_view probePrefix = "/.llm-interceptor/readiness/v1/";
 constexpr size_t probeMaximumResponseBytes = 1024;
@@ -239,6 +263,7 @@ InstalledSessionControlCore::handleControlRequest(const XpcControlRequest &reque
     XpcSessionControlReply reply;
     reply.state.assign(state_);
     const auto reject = [&reply](std::string_view reason) {
+        logSessionControlRejection(reason);
         reply.reason.assign(reason);
         return reply;
     };
@@ -261,6 +286,7 @@ XpcSessionControlReply InstalledSessionControlCore::startSession(const XpcContro
     XpcSessionControlReply reply;
     reply.state.assign(state_);
     const auto reject = [&reply](std::string_view reason) {
+        logSessionControlRejection(reason);
         reply.reason.assign(reason);
         return reply;
     };
@@ -286,7 +312,7 @@ XpcSessionControlReply InstalledSessionControlCore::startSession(const XpcContro
 
     std::string startError;
     if (!backend_.startOwnedOperations(tuple, &startError))
-        return reject("session_start_failed");
+        return reject(startFailedReason(startError));
     int64_t nowMs = 0;
     if (!clockNow(&nowMs))
         nowMs = 0;
@@ -332,6 +358,7 @@ InstalledSessionControlCore::dispatchSessionCommand(const XpcControlRequest &req
     XpcSessionControlReply reply;
     reply.state.assign(state_);
     const auto reject = [&reply](std::string_view reason) {
+        logSessionControlRejection(reason);
         reply.reason.assign(reason);
         return reply;
     };

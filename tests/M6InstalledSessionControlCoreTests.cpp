@@ -165,7 +165,8 @@ class M6InstalledSessionControlCoreTests final : public QObject {
             QCOMPARE(backend.calls, expectedCalls);
             if (!backendError.isEmpty()) {
                 QVERIFY(!reply.ok);
-                compareReplyReason(reply, "session_start_failed");
+                // Fix 3b: the bounded backend failure code is appended to the Start rejection.
+                compareReplyReason(reply, "session_start_failed: scoped_backend_unavailable");
                 compareReplyState(reply, "ready");
                 QVERIFY(reply.sessionCapability.empty());
                 QVERIFY(reply.sessionId.empty());

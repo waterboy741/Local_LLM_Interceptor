@@ -286,7 +286,7 @@ MainWindow::MainWindow(SessionController *controller,
     auto *helperLayout = new QHBoxLayout(helperRow);
     helperLayout->setContentsMargins(0, 0, 0, 0);
     auto *checkHelperStatus = new QPushButton("Check helper status", helperRow);
-    checkHelperStatus->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
+    checkHelperStatus->setSizePolicy(QSizePolicy::Minimum, QSizePolicy::Fixed);
     checkHelperStatus->setObjectName("checkHelperStatusButton");
     auto *helperStatus = new QLabel("Helper status not checked.", helperRow);
     helperStatus->setObjectName("helperStatus");
@@ -356,13 +356,13 @@ MainWindow::MainWindow(SessionController *controller,
     requestLayout->addWidget(requests_);
     auto *archiveRow = new QHBoxLayout;
     auto *exportArchive = new QPushButton("Export sanitized archive", requestPage);
-    exportArchive->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
+    exportArchive->setSizePolicy(QSizePolicy::Minimum, QSizePolicy::Fixed);
     exportArchive->setObjectName("exportArchiveButton");
     auto *importArchive = new QPushButton("Import offline replay", requestPage);
-    importArchive->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
+    importArchive->setSizePolicy(QSizePolicy::Minimum, QSizePolicy::Fixed);
     importArchive->setObjectName("importReplayButton");
     auto *clearReplay = new QPushButton("Clear replay", requestPage);
-    clearReplay->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
+    clearReplay->setSizePolicy(QSizePolicy::Minimum, QSizePolicy::Fixed);
     clearReplay->setObjectName("clearReplayButton");
     archiveRow->addWidget(exportArchive);
     archiveRow->addWidget(importArchive);
@@ -1162,13 +1162,14 @@ void MainWindow::beginStartTransparentSession() {
                 QString message;
                 if (!result.succeeded()) {
                     message = describeSessionClientStatus(result.status);
-                } else if (!result.ok || result.reason.isEmpty()) {
-                    message =
-                        QString("Helper rejected the session start (state %1).").arg(result.state);
-                } else {
+                } else if (!result.reason.isEmpty()) {
+                    // The helper names the failing boundary; show it whenever it is present.
                     message = QString("Helper rejected the session start (state %1, %2).")
                                   .arg(result.state)
                                   .arg(result.reason);
+                } else {
+                    message =
+                        QString("Helper rejected the session start (state %1).").arg(result.state);
                 }
                 transparentSessionStatus_->setText(message);
                 finishTransparentSession();

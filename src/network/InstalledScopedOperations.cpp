@@ -240,6 +240,42 @@ bool parseEnableToken(const std::string &output, unsigned long long *token) {
     return seen;
 }
 
+// Ground truth on this macOS build (blocker 11): pfctl sends notices and status — the ALTQ
+// preamble, `pf enabled`, the TOKENS table, `No pf starter references held` — to STDERR, with
+// stdout sometimes empty. Every parser of pfctl notices/status works on this combined view;
+// payload listings (`-s nat`/`-s rules` rows) stay stdout-only in the active-evaluation scan.
+std::string combinedOutput(const InstalledScopedCommandIo::Result &result) {
+    std::string combined = result.standardOutput;
+    if (!combined.empty() && combined.back() != '\n')
+        combined.push_back('\n');
+    combined += result.standardError;
+    return combined;
+}
+
+// Bounded, escaped, non-sensitive preview for uncertain-parse diagnostics: newlines become
+// semicolons, other non-printables dots, hard cap 80 bytes.
+std::string boundedPreview(const std::string &text) {
+    std::string preview;
+    for (const char character : text) {
+        if (preview.size() >= 80)
+            break;
+        if (character == '\n')
+            preview.push_back(';');
+        else if (character < 0x20 || static_cast<unsigned char>(character) == 0x7f)
+            preview.push_back('.');
+        else
+            preview.push_back(character);
+    }
+    return preview;
+}
+
+void logUncertainPreview(const char *context, const InstalledScopedCommandIo::Result &result) {
+    os_log_error(OS_LOG_DEFAULT,
+                 "llm_interceptor.scoped-uncertain %{public}s out=%{public}s err=%{public}s",
+                 context, boundedPreview(result.standardOutput).c_str(),
+                 boundedPreview(result.standardError).c_str());
+}
+
 enum class ReferenceState { Active, Absent, Unknown };
 
 // Mirrors the reviewed reference classifier: Active requires a token-naming line containing
@@ -840,12 +876,14 @@ bool InstalledScopedOperations::startOnQueue(const InstalledSessionTuple &tuple,
                                        maximumOutputBytes);
     logPhaseMs("pf_reference_preflight", monotonicMs() - enableStartedMs);
     unsigned long long token = 0;
-    if (commandCompleted(enabled) && parseEnableToken(enabled.standardOutput, &token)) {
+    if (commandCompleted(enabled) && parseEnableToken(combinedOutput(enabled), &token)) {
         pfToken_ = token;
         if (!journal_.append("pf-token " + std::to_string(token)))
             return failStart("journal_unavailable");
     } else if (enabled.started) {
         // Started but unreaped/unparsable: the command may have run, so the obligation stands.
+        // One bounded preview line makes the next unknown-output failure a single log read.
+        logUncertainPreview("pfctl_enable_token", enabled);
         pfTokenUncertain_ = true;
         (void)journal_.append("pf-token-uncertain");
         return failStart("pf_reference_uncertain");
@@ -1132,8 +1170,8 @@ bool InstalledScopedOperations::removeAnchorVerified(const std::string &anchor,
         fail(error, "anchor_cleanup_verification_failed");
         return false;
     }
-    if (!listingVerifiedEmpty(natListing.standardOutput) ||
-        !listingVerifiedEmpty(ruleListing.standardOutput)) {
+    if (!listingVerifiedEmpty(combinedOutput(natListing)) ||
+        !listingVerifiedEmpty(combinedOutput(ruleListing))) {
         fail(error, "anchor_cleanup_verification_not_empty");
         return false;
     }
@@ -1153,12 +1191,15 @@ bool InstalledScopedOperations::releaseTokenVerified(unsigned long long token, s
         fail(error, "pf_token_absence_unverified");
         return false;
     }
-    const auto state = classifyReferenceTable(references.standardOutput, token);
+    // The combined view: on this build the reference table and its notices arrive on stderr in
+    // separated-stream runs.
+    const auto state = classifyReferenceTable(combinedOutput(references), token);
     if (state == ReferenceState::Active) {
         fail(error, "pf_token_still_active");
         return false;
     }
     if (state == ReferenceState::Unknown) {
+        logUncertainPreview("pf_token_absence", references);
         fail(error, "pf_token_absence_unknown");
         return false;
     }

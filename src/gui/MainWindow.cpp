@@ -37,6 +37,16 @@
 #include <optional>
 namespace interceptor {
 namespace {
+
+// Long informative labels wrap and impose an ignored horizontal size policy, so their full
+// text width never forces the main window wide.
+QLabel *infoLabel(const QString &text, QWidget *parent) {
+    auto *label = new QLabel(text, parent);
+    label->setWordWrap(true);
+    label->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Minimum);
+    return label;
+}
+
 std::optional<QString> usableInterfaceIPv4(const QString &interfaceName) {
     const auto networkInterface = QNetworkInterface::interfaceFromName(interfaceName);
     if (!networkInterface.isValid() ||
@@ -203,9 +213,9 @@ MainWindow::MainWindow(SessionController *controller,
     auto *configPage = new QWidget(tabs);
     auto *layout = new QVBoxLayout(configPage);
     tabs->addTab(configPage, "Configuration");
-    layout->addWidget(new QLabel("Prepare a proxy configuration, then explicitly "
-                                 "start the Observe proxy.",
-                                 panel));
+    layout->addWidget(infoLabel("Prepare a proxy configuration, then explicitly "
+                                "start the Observe proxy.",
+                                panel));
     auto *form = new QFormLayout;
     interface_ = new QComboBox(panel);
     interface_->setPlaceholderText("No network interfaces available");
@@ -260,7 +270,7 @@ MainWindow::MainWindow(SessionController *controller,
     auto *stop = new QPushButton("Clear session", panel);
     stop->setObjectName("clearSessionButton");
     layout->addWidget(stop);
-    status_ = new QLabel(
+    status_ = infoLabel(
         interface_->count() == 0
             ? "No network interfaces available. Reopen after an interface becomes available."
             : "Idle — no network changes",
@@ -276,10 +286,12 @@ MainWindow::MainWindow(SessionController *controller,
     auto *helperLayout = new QHBoxLayout(helperRow);
     helperLayout->setContentsMargins(0, 0, 0, 0);
     auto *checkHelperStatus = new QPushButton("Check helper status", helperRow);
+    checkHelperStatus->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
     checkHelperStatus->setObjectName("checkHelperStatusButton");
     auto *helperStatus = new QLabel("Helper status not checked.", helperRow);
     helperStatus->setObjectName("helperStatus");
     helperStatus->setWordWrap(true);
+    helperStatus->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Minimum);
     helperLayout->addWidget(checkHelperStatus);
     helperLayout->addWidget(helperStatus, 1);
     layout->addWidget(helperRow);
@@ -344,16 +356,19 @@ MainWindow::MainWindow(SessionController *controller,
     requestLayout->addWidget(requests_);
     auto *archiveRow = new QHBoxLayout;
     auto *exportArchive = new QPushButton("Export sanitized archive", requestPage);
+    exportArchive->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
     exportArchive->setObjectName("exportArchiveButton");
     auto *importArchive = new QPushButton("Import offline replay", requestPage);
+    importArchive->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
     importArchive->setObjectName("importReplayButton");
     auto *clearReplay = new QPushButton("Clear replay", requestPage);
+    clearReplay->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
     clearReplay->setObjectName("clearReplayButton");
     archiveRow->addWidget(exportArchive);
     archiveRow->addWidget(importArchive);
     archiveRow->addWidget(clearReplay);
     requestLayout->addLayout(archiveRow);
-    auto *summary = new QLabel("No retained requests", requestPage);
+    auto *summary = infoLabel("No retained requests", requestPage);
     summary->setObjectName("inspectionSummary");
     requestLayout->addWidget(summary);
     auto *requestDetailsSplit = new QSplitter(Qt::Vertical, requestPage);
@@ -435,11 +450,11 @@ MainWindow::MainWindow(SessionController *controller,
             [updateAutomaticEditors](int) { updateAutomaticEditors(); });
     updateAutomaticEditors();
     settingsLayout->addWidget(
-        new QLabel("Timeout forwards original bytes. Observe releases held originals. Stop cancels "
-                   "held requests.\nRules replace existing object fields in order; missing fields "
-                   "remain unchanged. Automatic chat edits run before rules and do nothing when "
-                   "the selected operation has no applicable message.",
-                   settingsPage));
+        infoLabel("Timeout forwards original bytes. Observe releases held originals. Stop cancels "
+                  "held requests.\nRules replace existing object fields in order; missing fields "
+                  "remain unchanged. Automatic chat edits run before rules and do nothing when "
+                  "the selected operation has no applicable message.",
+                  settingsPage));
     auto *rules = new QTextEdit(settingsPage);
     rules->setPlainText("[]");
     rules->setObjectName("rulesInput");
@@ -450,7 +465,7 @@ MainWindow::MainWindow(SessionController *controller,
     auto *applyMode = new QPushButton("Apply mode and rules", settingsPage);
     applyMode->setObjectName("applyModificationOptionsButton");
     settingsLayout->addWidget(applyMode);
-    auto *modeStatus = new QLabel("Active mode: Observe", settingsPage);
+    auto *modeStatus = infoLabel("Active mode: Observe", settingsPage);
     settingsLayout->addWidget(modeStatus);
     const auto applySettings = [this, mode, holdMatching, holdSeconds, rules, modeStatus,
                                 automaticOperation, automaticMessage, automaticAppendText] {
@@ -981,7 +996,7 @@ MainWindow::MainWindow(SessionController *controller,
     auto *transparentPage = new QWidget(tabs);
     auto *transparentLayout = new QVBoxLayout(transparentPage);
     tabs->addTab(transparentPage, "Transparent session");
-    transparentLayout->addWidget(new QLabel(
+    transparentLayout->addWidget(infoLabel(
         "Start requests an authenticated scoped PF/ARP session over the fixed privileged XPC "
         "service. It needs the installed, operator-configured helper; when the helper is absent "
         "or its identity is not configured, the request fails closed and nothing is mutated.",
@@ -994,6 +1009,7 @@ MainWindow::MainWindow(SessionController *controller,
     transparentSessionStatus_ = new QLabel("No transparent session.", transparentPage);
     transparentSessionStatus_->setObjectName("transparentSessionStatus");
     transparentSessionStatus_->setWordWrap(true);
+    transparentSessionStatus_->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Minimum);
     transparentLayout->addWidget(transparentSessionStart_);
     transparentLayout->addWidget(transparentSessionStop_);
     transparentLayout->addWidget(transparentSessionStatus_);
@@ -1041,6 +1057,7 @@ MainWindow::MainWindow(SessionController *controller,
     connect(transparentSessionStop_, &QPushButton::clicked, this,
             [this] { beginStopTransparentSession(false); });
     setCentralWidget(panel);
+    setMinimumWidth(400);
     resize(680, 660);
 }
 void MainWindow::beginStartTransparentSession() {
@@ -1056,6 +1073,17 @@ void MainWindow::beginStartTransparentSession() {
         transparentSessionStatus_->setText(
             "Transparent sessions need a selected physical interface; loopback-only explicit "
             "configurations cannot redirect.");
+        return;
+    }
+    // Derive the transparent shape of the prepared configuration: the explicit-proxy flag
+    // belongs to the Observe proxy, and the transparent listener rejects explicitProxy
+    // configurations. One copy feeds the listener, the readiness revalidation, and the Start
+    // tuple so every value agrees.
+    SessionConfig transparentConfig = *config;
+    transparentConfig.explicitProxy = false;
+    const auto configurationErrors = transparentConfig.validate();
+    if (!configurationErrors.isEmpty()) {
+        transparentSessionStatus_->setText(configurationErrors.join("\n"));
         return;
     }
     const bool proxyAlreadyRunning = proxy_.listenPort() != 0;
@@ -1074,10 +1102,10 @@ void MainWindow::beginStartTransparentSession() {
         ProxyOptions options;
         options.transparentRedirect = true;
         options.listenAddress = *address;
-        options.allowedClientIp = config->clientIp;
+        options.allowedClientIp = transparentConfig.clientIp;
         options.listenPort = listenPort_->value();
         options.timeoutMs = 120000;
-        if (!proxy_.start(*config, options)) {
+        if (!proxy_.start(transparentConfig, options)) {
             transparentSessionStatus_->setText(
                 "Could not start the transparent listener. Clear any loaded replay and retry.");
             return;

@@ -9,7 +9,7 @@ Build a macOS-first research application that uses scoped ARP redirection to obs
 - Stack uses C++20, Qt 6 Widgets, CMake, Ninja, and Qt Test.
 - The intended topology puts one client, one Ollama server, and the research Mac on the same IPv4 layer-2 segment.
 - Support HTTP/1.1 JSON requests and JSON or streamed NDJSON responses. Configure the client/server IPv4, server port, and API paths. Synthetic coverage starts with `POST /api/generate`; the observed OpenCode path is `/v1/chat/completions`. Port 11434 is an example default.
-- Transparent mode preserves the client’s server URL. Explicit proxy mode uses a client-configured listener URL.
+- In the authorized transparent-mode lab, OpenCode keeps its original Ollama base URL, including the host and port. ARP spoofing routes the selected OpenCode traffic through the application. Explicit proxy mode uses a client-configured listener URL.
 - Define and test forwarding or rejection for IPv6, HTTP/2, HTTP/3, WebSockets, compressed requests, and multipart uploads. TLS inspection, modification, and trust configuration are out of scope.
 
 ## User Workflow
@@ -156,7 +156,8 @@ Record current OS, interface, addressing, subnet/L2 and network policy, client/A
 Acceptance:
 - Confirm peer reachability, selected endpoint/protocol, Wi-Fi ARP compatibility, and both-direction MAC/IP delivery using sanitized synthetic traffic first.
 - Demonstrate that the dedicated PF anchor is actively evaluated, a fresh SYN reaches the proxy, and expected state/counters and reverse translation exist.
-- The client keeps its configured server address; the proxy uses the selected server IP/port, including a nondefault-port test. No recursive upstream connections occur.
+- Verify that OpenCode uses the same Ollama base URL before, during, and after the transparent-mode session and that its requests pass through the application via ARP spoofing during the session.
+- Verify that the proxy uses the selected server IP and port, including a nondefault-port test, and that upstream connections reach the server without looping back through the proxy.
 - Actual LLM requests are visible and native NDJSON responses stream; representative non-LLM bypass traffic works in both directions. Shorter and longer edited JSON bodies arrive intact and exactly once at the mock server in the real network path before testing edits against Ollama.
 - Repeated start/stop, partial startup failure, interface loss, GUI/helper/proxy failure, existing connections, stale neighbors, and cleanup have measured outcomes. Unrelated PF rules/state/references remain intact.
 - Helper packaging, installation, authentication, required privileges, watchdog behavior, and a multi-device walkthrough are verified with actual limitations.

@@ -9,6 +9,7 @@
 #include <net/bpf.h>
 #include <net/if.h>
 #include <net/if_dl.h>
+#include <os/log.h>
 #include <sys/ioctl.h>
 #include <sys/socket.h>
 #include <sys/sysctl.h>
@@ -29,9 +30,39 @@ constexpr std::string_view journalName = "scoped-session-obligations.journal";
 constexpr std::size_t maximumJournalBytes = 16 * 1024;
 constexpr std::size_t arpFrameSize = 60;
 constexpr int maximumBpfDeviceIndex = 8;
-constexpr int commandTimeoutMs = 4000;
+constexpr int commandTimeoutMs = 2000;
 constexpr std::string_view forwardingName = "net.inet.ip.forwarding";
 constexpr std::string_view sendRedirectsName = "net.inet.ip.redirect";
+
+// Trusted monotonic clock for phase timing only (never for security decisions).
+std::int64_t monotonicMs() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+               std::chrono::steady_clock::now().time_since_epoch())
+        .count();
+}
+
+// One bounded, non-sensitive os_log line per startup/teardown phase: the fixed phase name and a
+// clamped duration in milliseconds, nothing else. Durations are rounded to whole ms and clamped
+// to [0, 600000] so no clock anomaly can produce an unbounded log value.
+void logPhaseMs(const char *phase, std::int64_t elapsedMs) {
+    std::int64_t clamped = elapsedMs < 0 ? 0 : (elapsedMs > 600000 ? 600000 : elapsedMs);
+    os_log_error(OS_LOG_DEFAULT, "llm_interceptor.scoped-phase %{public}s duration_ms=%lld", phase,
+                 static_cast<long long>(clamped));
+}
+
+// Logs its phase duration when the scope leaves, on both success and failure paths, so the last
+// logged phase names exactly where a Start stopped making progress.
+class ScopedPhaseLog final {
+  public:
+    explicit ScopedPhaseLog(const char *phase) : phase_(phase), startedMs_(monotonicMs()) {}
+    ~ScopedPhaseLog() { logPhaseMs(phase_, monotonicMs() - startedMs_); }
+    ScopedPhaseLog(const ScopedPhaseLog &) = delete;
+    ScopedPhaseLog &operator=(const ScopedPhaseLog &) = delete;
+
+  private:
+    const char *phase_;
+    std::int64_t startedMs_;
+};
 
 void fail(std::string *error, const char *reason) {
     if (error)
@@ -375,9 +406,18 @@ InstalledScopedCommandIo::Result InstalledScopedSpawnCommandIo::run(
         const std::size_t remainingBytes = result.standardOutput.size() >= maximumOutputBytes
                                                ? 0
                                                : maximumOutputBytes - result.standardOutput.size();
-        if (remainingBytes == 0)
+        // Both channels must be drained: waitForReadable reports a pending child as readable when
+        // EITHER stream holds bytes (pfctl legitimately writes warnings to stderr), and a stdout
+        // read that drains nothing would re-enter the loop immediately and spin without ever
+        // reaping. stderr is captured bounded alongside stdout.
+        if (remainingBytes == 0 && result.standardError.size() >= maximumOutputBytes)
             break;
         result.standardOutput += engine.readStandardOutput(remainingBytes);
+        const std::size_t remainingErrorBytes =
+            result.standardError.size() >= maximumOutputBytes
+                ? 0
+                : maximumOutputBytes - result.standardError.size();
+        result.standardError += engine.readStandardError(remainingErrorBytes);
     }
     if (!engine.waitForFinished(remainingMs()))
         return result; // not reaped: the engine keeps and reaps the child
@@ -626,12 +666,14 @@ bool InstalledScopedOperations::startOnQueue(const InstalledSessionTuple &tuple,
         fail(error, "session_already_owned");
         return false;
     }
+    ScopedPhaseLog totalPhase("start_total");
     if (journal_.hasRecords()) {
         // A previous start died with obligations outstanding (process restart with a journaled
         // enable token, anchor, or settings restore). Attempt the ordered reconciliation before
         // deciding: fully verified recovery clears the journal and the fresh start proceeds, and
         // any uncertain or failed step stays recovery_pending so the operator is never told a
         // lie.
+        ScopedPhaseLog phase("journal_reconcile");
         std::string recoveryError;
         if (!reconcileJournalOnQueue(&recoveryError)) {
             if (error)
@@ -642,6 +684,7 @@ bool InstalledScopedOperations::startOnQueue(const InstalledSessionTuple &tuple,
 
     // Neighbor and interface facts (fresh, never cached): the interface MAC must be live, and
     // both the client and upstream must resolve on exactly this interface right now.
+    const std::int64_t neighborStartedMs = monotonicMs();
     NeighborFacts facts;
     facts.researchMac = macAddressOfInterface(tuple.interfaceName);
     if (facts.researchMac.empty()) {
@@ -661,14 +704,18 @@ bool InstalledScopedOperations::startOnQueue(const InstalledSessionTuple &tuple,
             return false;
         }
     }
+    logPhaseMs("neighbor_facts", monotonicMs() - neighborStartedMs);
 
+    const std::int64_t settingsSnapshotStartedMs = monotonicMs();
     int forwarding = 0, sendRedirects = 0;
     if (!settings_.read(std::string(forwardingName), &forwarding) ||
         !settings_.read(std::string(sendRedirectsName), &sendRedirects)) {
         return failStart("settings_unavailable");
     }
+    logPhaseMs("settings_snapshot", monotonicMs() - settingsSnapshotStartedMs);
 
     // PF enable reference: capture the exact token and journal the obligation durably.
+    const std::int64_t enableStartedMs = monotonicMs();
     const auto enabled = commands_.run(std::string(pfctlPath), {"-E"}, nullptr, commandTimeoutMs,
                                        maximumOutputBytes);
     unsigned long long token = 0;
@@ -684,12 +731,14 @@ bool InstalledScopedOperations::startOnQueue(const InstalledSessionTuple &tuple,
     } else {
         return failStart("pf_reference_unavailable");
     }
+    logPhaseMs("pfctl_enable_token", monotonicMs() - enableStartedMs);
 
     // Owned anchor: scoped rules, then install through the one typed command path.
     const std::string sessionKey = anchorIdFactory_();
     if (sessionKey.empty())
         return failStart("session_key_unavailable");
     anchor_ = "llm_interceptor/" + sessionKey;
+    const std::int64_t anchorStartedMs = monotonicMs();
     const std::string rules = sessionPfRules(tuple, sessionKey);
     const auto installed = commands_.run(std::string(pfctlPath), {"-a", anchor_, "-f", "-"}, &rules,
                                          commandTimeoutMs, maximumOutputBytes);
@@ -699,15 +748,19 @@ bool InstalledScopedOperations::startOnQueue(const InstalledSessionTuple &tuple,
     }
     if (!journal_.append("anchor " + anchor_))
         return failStart("journal_unavailable");
+    logPhaseMs("anchor_install", monotonicMs() - anchorStartedMs);
 
     // Active-evaluation verification before any frame: the anchor must actually hold both owned
     // rule types. Success is never inferred from an empty response.
+    const std::int64_t evaluationStartedMs = monotonicMs();
     std::string verificationError;
     if (!ruleActivelyLoaded(anchor_, &verificationError))
         return failStart("anchor_verification_failed");
+    logPhaseMs("active_evaluation", monotonicMs() - evaluationStartedMs);
 
     // Kernel settings only where not already at the desired values; the previous value is
     // journaled before the write so an uncertain crash restores it.
+    const std::int64_t settingsStartedMs = monotonicMs();
     if (forwarding != 1) {
         if (!journal_.append("forwarding-restore " + std::to_string(forwarding)))
             return failStart("journal_unavailable");
@@ -722,6 +775,7 @@ bool InstalledScopedOperations::startOnQueue(const InstalledSessionTuple &tuple,
             return failStart("redirects_setup_failed");
         previousSendRedirects_ = sendRedirects;
     }
+    logPhaseMs("settings", monotonicMs() - settingsStartedMs);
 
     // ARP redirect frames (pairwise) and bounded refresh (client mapping only).
     const auto research = decodeMac(facts.researchMac), client = decodeMac(facts.clientMac),
@@ -740,16 +794,20 @@ bool InstalledScopedOperations::startOnQueue(const InstalledSessionTuple &tuple,
     redirectFrames_ = {toClientRedirect, toServerRedirect};
     restorationFrames_ = {toClientRestore, toServerRestore};
 
+    const std::int64_t arpStartedMs = monotonicMs();
     std::string arpError;
     if (!arp_.open(tuple.interfaceName, &arpError))
         return failStart("arp_writer_unavailable");
     arpActive_ = true;
+    logPhaseMs("arp_open", monotonicMs() - arpStartedMs);
+    const std::int64_t framesStartedMs = monotonicMs();
     for (const auto &frame : redirectFrames_) {
         if (!arp_.sendFrame(frame.data(), frame.size())) {
             (void)sendRestorationFrames();
             return failStart("arp_write_failed");
         }
     }
+    logPhaseMs("arp_first_frames", monotonicMs() - framesStartedMs);
     if (!startRefreshTimer(&arpError))
         return failStart("arp_refresh_timer_unavailable");
     facts_ = facts;
@@ -836,6 +894,7 @@ bool InstalledScopedOperations::reconcileJournalOnQueue(std::string *error) {
 }
 
 void InstalledScopedOperations::stopOnQueue(bool *cleaned, std::string *error) {
+    ScopedPhaseLog totalPhase("stop_total");
     if (cleaned)
         *cleaned = false;
     stopRefreshTimer();

@@ -24,6 +24,10 @@ class InstalledScopedCommandIo {
         bool normalExit = false;
         int exitCode = -1;
         std::string standardOutput;
+        // Bounded stderr capture (same engine cap): the loop must drain BOTH channels or a
+        // stderr-only child output tight-spins waitForReadable forever; keeping the bytes also
+        // gives the lab pfctl stderr diagnostics.
+        std::string standardError;
     };
 
     virtual ~InstalledScopedCommandIo() = default;

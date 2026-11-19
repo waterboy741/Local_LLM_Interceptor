@@ -71,3 +71,21 @@ Blocker 9 (live-verified): an ABSENT obligations file is the clean state — the
 Blocker 10 (fd lifetime, live-blockling): the helper main closes its trusted state-directory fd right after backend construction, so with the journal now absent-clean and created on demand, the stored raw directory fd was stale (EBADF → `journal_unavailable` on the first append). `InstalledScopedJournal` now owns a `dup` of the directory fd from `open` until destruction (FD_CLOEXEC preserved via fcntl); `reopen` and the on-demand create both use the owned duplicate, and the caller keeps full freedom to close its own fd immediately. No other backend collaborator stores the raw fd — the command/ARP/settings seams take none.
 
 Blocker 11 ground truth (verbose capture, same build): with separated streams, `pfctl -E` writes NOTHING to stdout — the ALTQ preamble, `pf enabled`, and `Token : <decimal>` all arrive on stderr; the same split applies to `-s References` (table, `No pf starter references held`, `pf disabled`-style status). This is systematic on this build: pfctl notices/status go to stderr. The installed token parse, reference classifier, and verified-empty listing check now all work on the COMBINED stdout+stderr view with the bounded preamble tolerance; the active-evaluation `rdr`/`pass` scans stay stdout-only (payload rows; combining could only loosen a presence check). When the enable or reference parse goes uncertain, one bounded escaped preview (≤80 bytes each of stdout and stderr, newlines escaped) is logged as `llm_interceptor.scoped-uncertain …`, making the next unknown-output failure a single log read. All other shapes stay fail-closed.
+
+## Live-fix index (November 18, 2026 night session)
+
+Eleven bounded production fixes, each evidenced by observed live failure only (no speculation), in live-encounter order:
+
+1. Three-line `session-control=true` config parser order (requirement validated after stripping).
+2. InstalledLifecycle reply path for authenticated read-only Probe/Status (byte-identical replies restored).
+3. Client `parseReply` never overwrites `ok` (rejected heartbeats reach the GUI truthfully).
+4. `arp -n` interface-token parse cut at first whitespace (real output shape).
+5. GUI transparent Start derives `explicitProxy=false` from the prepared config (and window-shrink/layout follow-ups in the same pass).
+6. GUI stop-path reason printing (helper reason shown, not swallowed).
+7. Session-control Start client deadline 10000 ms + watchdog-in-Start verification + named-token journal reconciliation.
+8. Per-phase os_log timing instrumentation + the stdout-only drain busy-spin fix (100%-CPU wedge) + per-command 2000 ms bound.
+9. Token/reference classifier ground truth: ALTQ preamble tolerance (extendable-record set).
+10. Journal absent-file = clean state, create-on-demand, per-Start reopen (stale in-memory records fixed); torn-record ordering verified fail-closed; journal owns a `dup` of the trusted directory fd (fd-lifetime fix, otherwise EBADF → `journal_unavailable` on the first append).
+11. Combined stdout+stderr pfctl parsing (notices/status systematically on stderr on this build) + bounded uncertain previews.
+
+Hardening item found live: with the attachment references absent from the main ruleset, a session that reaches Active still IP-forwards the redirected traffic — it never reaches the interceptor and the GUI shows nothing. Start must verify the attachment references before mutating ARP mappings.

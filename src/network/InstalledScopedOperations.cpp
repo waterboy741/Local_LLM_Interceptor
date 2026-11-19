@@ -212,6 +212,13 @@ bool parseEnableToken(const std::string &output, unsigned long long *token) {
         line = trim(line);
         if (line.empty())
             continue;
+        // Ground truth observed live on this macOS 26/27 build: `pfctl -E` prefixes the Token
+        // line with exactly these two ALTQ lines. Tolerated only before the Token line; anything
+        // else keeps the uncertain/fail-closed verdict.
+        const std::string loweredLine = toLower(line);
+        if (!seen && (loweredLine == "no altq support in kernel" ||
+                      loweredLine == "altq related functions disabled"))
+            continue;
         const std::size_t colon = line.find(':');
         if (colon == std::string::npos || seen || line.size() > 32 ||
             toLower(trim(line.substr(0, colon))) != "token")
@@ -268,10 +275,18 @@ ReferenceState classifyReferenceTable(const std::string &output, unsigned long l
             }
             continue;
         }
-        if (lowered == "no references" || lowered == "references: 0" || lowered == "refs: 0") {
+        if (lowered == "no references" || lowered == "references: 0" || lowered == "refs: 0" ||
+            // Ground truth observed live on this macOS 26/27 build: the empty-state reference
+            // query answers with exactly this line.
+            lowered == "no pf starter references held") {
             recognizedEmpty = true;
             continue;
         }
+        // Ground-truth ALTQ preamble observed live on this build, preceding both the empty-state
+        // line and the TOKENS table; tolerated exactly in this bounded two-line form, and
+        // anything else keeps the Unknown verdict.
+        if (lowered == "no altq support in kernel" || lowered == "altq related functions disabled")
+            continue;
         return ReferenceState::Unknown;
     }
     return recognizedEmpty ? ReferenceState::Absent : ReferenceState::Unknown;
@@ -667,18 +682,21 @@ bool InstalledScopedOperations::startOnQueue(const InstalledSessionTuple &tuple,
         return false;
     }
     ScopedPhaseLog totalPhase("start_total");
-    if (journal_.hasRecords()) {
-        // A previous start died with obligations outstanding (process restart with a journaled
-        // enable token, anchor, or settings restore). Attempt the ordered reconciliation before
-        // deciding: fully verified recovery clears the journal and the fresh start proceeds, and
-        // any uncertain or failed step stays recovery_pending so the operator is never told a
-        // lie.
-        ScopedPhaseLog phase("journal_reconcile");
-        std::string recoveryError;
-        if (!reconcileJournalOnQueue(&recoveryError)) {
-            if (error)
-                *error = recoveryError.empty() ? "recovery_pending" : recoveryError;
-            return false;
+    // Always logged, including the empty-journal no-op, so an absent line is unambiguous.
+    {
+        ScopedPhaseLog reconcilePhase("journal_reconcile");
+        if (journal_.hasRecords()) {
+            // A previous start died with obligations outstanding (process restart with a
+            // journaled enable token, anchor, or settings restore). Attempt the ordered
+            // reconciliation before deciding: fully verified recovery clears the journal and the
+            // fresh start proceeds, and any uncertain or failed step stays recovery_pending so
+            // the operator is never told a lie.
+            std::string recoveryError;
+            if (!reconcileJournalOnQueue(&recoveryError)) {
+                if (error)
+                    *error = recoveryError.empty() ? "recovery_pending" : recoveryError;
+                return false;
+            }
         }
     }
 
@@ -714,10 +732,13 @@ bool InstalledScopedOperations::startOnQueue(const InstalledSessionTuple &tuple,
     }
     logPhaseMs("settings_snapshot", monotonicMs() - settingsSnapshotStartedMs);
 
-    // PF enable reference: capture the exact token and journal the obligation durably.
+    // PF enable reference: capture the exact token and journal the obligation durably. The
+    // command itself gets its own preflight line so an absent pfctl_enable_token line localizes
+    // the failure to the token parse instead of to the spawned command.
     const std::int64_t enableStartedMs = monotonicMs();
     const auto enabled = commands_.run(std::string(pfctlPath), {"-E"}, nullptr, commandTimeoutMs,
                                        maximumOutputBytes);
+    logPhaseMs("pf_reference_preflight", monotonicMs() - enableStartedMs);
     unsigned long long token = 0;
     if (commandCompleted(enabled) && parseEnableToken(enabled.standardOutput, &token)) {
         pfToken_ = token;

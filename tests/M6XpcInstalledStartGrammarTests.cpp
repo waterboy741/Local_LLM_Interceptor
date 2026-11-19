@@ -235,8 +235,11 @@ class M6XpcInstalledStartGrammarTests final : public QObject {
         }
 
         // Interface name rules: bounded, charset-safe, alnum first character.
-        for (const QByteArray invalid : {"", "0iface", "_iface", "has space", "has/slash",
-                                          QByteArray(33, 'a')}) {
+        const QList<QByteArray> invalidInterfaces = {
+            QByteArrayLiteral(""), QByteArrayLiteral("_iface"),
+            QByteArrayLiteral("has space"), QByteArrayLiteral("has/slash"), QByteArray(33, 'a'),
+        };
+        for (const QByteArray &invalid : invalidInterfaces) {
             xpc_object_t message = installedStartMessage();
             xpc_dictionary_set_string(message, "interface", invalid.constData());
             QVERIFY2(!gate.parse(message, &parsed, &error), invalid.constData());
@@ -320,8 +323,8 @@ class M6XpcInstalledStartGrammarTests final : public QObject {
         xpc_release(message);
 
         // An invalid trusted requirement rejects before the policy ever runs.
-        XpcControlRequest invalidRequirementGate("", policy,
-                                                 XpcControlRequestGate::Mode::InstalledLifecycle);
+        XpcControlRequestGate invalidRequirementGate(
+            "", policy, XpcControlRequestGate::Mode::InstalledLifecycle);
         xpc_object_t second = installedStartMessage();
         std::string secondError = "stale";
         QVERIFY(!invalidRequirementGate.parse(second, &parsed, &secondError));

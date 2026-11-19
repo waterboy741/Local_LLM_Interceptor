@@ -1,6 +1,7 @@
 #include "XpcReadOnlyServiceListener.hpp"
 
 #include <algorithm>
+#include <os/log.h>
 #include <string>
 
 namespace interceptor {
@@ -69,16 +70,30 @@ xpc_object_t XpcReadOnlyControlAdapter::createBoundedReplyPayload(XpcControlOper
 }
 
 xpc_object_t XpcReadOnlyControlAdapter::handleMessage(xpc_object_t message) const {
+    std::string parseError;
     XpcControlRequest request;
-    if (!gate_.parse(message, &request))
+    if (!gate_.parse(message, &request, &parseError)) {
+        // One bounded, non-sensitive reason line from the fixed vocabulary only (no sender,
+        // identity, or path data), so a live rejection is debuggable without weakening the
+        // trust boundary.
+        if (!parseError.empty())
+            os_log_error(OS_LOG_DEFAULT, "llm_interceptor.read-only refused request: %{public}s",
+                         parseError.c_str());
         return nullptr;
+    }
 
     xpc_object_t reply = xpc_dictionary_create_reply(message);
-    if (!reply)
+    if (!reply) {
+        os_log_error(OS_LOG_DEFAULT,
+                     "llm_interceptor.read-only refused request: xpc_control_reply_create_failed");
         return nullptr;
+    }
     xpc_object_t payload = createBoundedReplyPayload(request.operation);
     if (!payload) {
         xpc_release(reply);
+        os_log_error(
+            OS_LOG_DEFAULT,
+            "llm_interceptor.read-only refused request: xpc_control_reply_payload_unavailable");
         return nullptr;
     }
     xpc_dictionary_apply(payload, ^bool(const char *key, xpc_object_t value) {

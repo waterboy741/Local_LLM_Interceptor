@@ -375,3 +375,50 @@ target_link_libraries(m6_xpc_session_control_reply_tests PRIVATE
 add_test(NAME m6_xpc_session_control_reply
     COMMAND m6_xpc_session_control_reply_tests)
 set_tests_properties(m6_xpc_session_control_reply PROPERTIES TIMEOUT 30)
+
+qt_add_executable(m6_xpc_installed_start_grammar_tests
+    M6XpcInstalledStartGrammarTests.cpp)
+target_link_libraries(m6_xpc_installed_start_grammar_tests PRIVATE
+    interceptor_read_only_xpc Qt6::Test)
+add_test(NAME m6_xpc_installed_start_grammar
+    COMMAND m6_xpc_installed_start_grammar_tests)
+set_tests_properties(m6_xpc_installed_start_grammar PROPERTIES TIMEOUT 30)
+
+qt_add_executable(m6_installed_session_control_core_tests
+    M6InstalledSessionControlCoreTests.cpp)
+target_link_libraries(m6_installed_session_control_core_tests PRIVATE
+    interceptor_read_only_xpc Qt6::Test)
+add_test(NAME m6_installed_session_control_core
+    COMMAND m6_installed_session_control_core_tests)
+set_tests_properties(m6_installed_session_control_core PROPERTIES TIMEOUT 30)
+
+qt_add_executable(m6_xpc_session_control_integration_tests
+    M6XpcSessionControlIntegrationTests.cpp)
+target_link_libraries(m6_xpc_session_control_integration_tests PRIVATE
+    interceptor_network Qt6::Test)
+add_test(NAME m6_xpc_session_control_integration
+    COMMAND m6_xpc_session_control_integration_tests)
+set_tests_properties(m6_xpc_session_control_integration PROPERTIES TIMEOUT 90)
+
+qt_add_executable(m6_installed_scoped_operations_tests M6InstalledScopedOperationsTests.cpp)
+target_link_libraries(m6_installed_scoped_operations_tests PRIVATE
+    interceptor_read_only_xpc Qt6::Test Qt6::Network)
+add_test(NAME m6_installed_scoped_operations
+    COMMAND m6_installed_scoped_operations_tests)
+set_tests_properties(m6_installed_scoped_operations PROPERTIES TIMEOUT 60)
+
+qt_add_executable(m6_posix_spawn_child_process_tests M6PosixSpawnChildProcessTests.cpp)
+target_link_libraries(m6_posix_spawn_child_process_tests PRIVATE
+    interceptor_network Qt6::Test)
+add_test(NAME m6_posix_spawn_child_process
+    COMMAND m6_posix_spawn_child_process_tests)
+set_tests_properties(m6_posix_spawn_child_process PROPERTIES TIMEOUT 60)
+
+qt_add_executable(m6_transparent_session_gui_tests M6TransparentSessionGuiTests.cpp)
+target_link_libraries(m6_transparent_session_gui_tests PRIVATE
+    interceptor_gui Qt6::Test Qt6::Network)
+add_test(NAME m6_transparent_session_gui COMMAND m6_transparent_session_gui_tests)
+set_tests_properties(m6_transparent_session_gui PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+    TIMEOUT 60
+)

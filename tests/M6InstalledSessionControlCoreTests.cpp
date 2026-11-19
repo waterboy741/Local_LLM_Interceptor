@@ -77,6 +77,8 @@ XpcControlRequest sessionRequest(XpcControlOperation operation, const std::strin
     return request;
 }
 
+} // namespace
+
 class M6InstalledSessionControlCoreTests final : public QObject {
     Q_OBJECT
 
@@ -88,10 +90,10 @@ class M6InstalledSessionControlCoreTests final : public QObject {
     }
 
     static void compareReplyReason(const XpcSessionControlReply &reply, const char *reason) {
-        QCOMPARE(QByteArray::fromStdString(reply.reason), QByteArrayLiteral(reason));
+        QCOMPARE(reply.reason, std::string(reason));
     }
     static void compareReplyState(const XpcSessionControlReply &reply, const char *state) {
-        QCOMPARE(QByteArray::fromStdString(reply.state), QByteArrayLiteral(state));
+        QCOMPARE(reply.state, std::string(state));
     }
 
   private slots:
@@ -149,18 +151,18 @@ class M6InstalledSessionControlCoreTests final : public QObject {
     }
 
     void freshListenerVerificationRunsOnlyAfterEffectiveRootAndBeforeOperations() {
-        for (const QString &backendError : {QStringLiteral("scoped_backend_unavailable"),
-                                             QStringLiteral()}) {
+        for (const QString &backendError :
+             {QStringLiteral("scoped_backend_unavailable"), QString()}) {
             FakeCoreBackend backend;
             backend.starts = backendError.isEmpty();
             InstalledSessionControlCore core(backend, [this] { return clockMs; });
             const auto reply = core.handleControlRequest(startRequest());
             // The fixed order: root -> fresh verification -> start owned operations.
-            QCOMPARE(backend.calls,
-                     QStringList{QStringLiteral("root"), QStringLiteral(
-                                                            "verify:en0:192.0.2.10:192.0.2.30:"
-                                                            "192.0.2.20:18081:11434"),
-                                 QStringLiteral("start")});
+            const QStringList expectedCalls = {
+                QStringLiteral("root"),
+                QStringLiteral("verify:en0:192.0.2.10:192.0.2.30:192.0.2.20:18081:11434"),
+                QStringLiteral("start")};
+            QCOMPARE(backend.calls, expectedCalls);
             if (!backendError.isEmpty()) {
                 QVERIFY(!reply.ok);
                 compareReplyReason(reply, "session_start_failed");

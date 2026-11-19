@@ -212,12 +212,14 @@ bool parseEnableToken(const std::string &output, unsigned long long *token) {
         line = trim(line);
         if (line.empty())
             continue;
-        // Ground truth observed live on this macOS 26/27 build: `pfctl -E` prefixes the Token
-        // line with exactly these two ALTQ lines. Tolerated only before the Token line; anything
-        // else keeps the uncertain/fail-closed verdict.
+        // Ground truth observed live on this macOS 26/27 build, in this order: `pfctl -E`
+        // prefixes the Token line with the two ALTQ lines plus a `pf enabled` status line.
+        // Tolerated only before the Token line; anything else keeps the uncertain/fail-closed
+        // verdict.
         const std::string loweredLine = toLower(line);
-        if (!seen && (loweredLine == "no altq support in kernel" ||
-                      loweredLine == "altq related functions disabled"))
+        if (!seen &&
+            (loweredLine == "no altq support in kernel" ||
+             loweredLine == "altq related functions disabled" || loweredLine == "pf enabled"))
             continue;
         const std::size_t colon = line.find(':');
         if (colon == std::string::npos || seen || line.size() > 32 ||
@@ -292,9 +294,26 @@ ReferenceState classifyReferenceTable(const std::string &output, unsigned long l
     return recognizedEmpty ? ReferenceState::Absent : ReferenceState::Unknown;
 }
 
-// Verified-empty anchor listing: exit 0 plus a whitespace-only rules/nat listing is the
-// reviewed "empty" classification; any non-empty line keeps the obligation (fail-closed).
-bool listingVerifiedEmpty(const std::string &listing) { return trim(listing).empty(); }
+// Verified-empty anchor listing: exit 0 plus a listing whose every non-empty line is the
+// bounded pfctl status preamble this build prefixes to every invocation (`No ALTQ support in
+// kernel`, `ALTQ related functions disabled`); any other non-empty content keeps the obligation
+// (fail-closed).
+bool listingVerifiedEmpty(const std::string &listing) {
+    std::size_t position = 0;
+    while (position < listing.size()) {
+        std::size_t end = listing.find('\n', position);
+        if (end == std::string::npos)
+            end = listing.size();
+        const std::string trimmed = trim(listing.substr(position, end - position));
+        position = end + 1;
+        if (trimmed.empty())
+            continue;
+        const std::string lowered = toLower(trimmed);
+        if (lowered != "no altq support in kernel" && lowered != "altq related functions disabled")
+            return false;
+    }
+    return true;
+}
 
 void putWord(std::vector<unsigned char> &frame, unsigned short value) {
     frame.push_back(static_cast<unsigned char>(value >> 8));

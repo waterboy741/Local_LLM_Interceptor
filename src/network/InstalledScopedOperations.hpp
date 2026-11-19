@@ -149,6 +149,11 @@ class InstalledScopedOperations final : public InstalledSessionControlBackend {
     };
 
     bool startOnQueue(const InstalledSessionTuple &tuple, std::string *error);
+    // Ordered reconciliation of durable obligations left by a previous start that died before
+    // verified teardown (process restart with a non-empty journal). Only a fully verified
+    // reconciliation clears the journal; any unknown record, uncertain token, or failed
+    // verification stays `recovery_pending` truthfully.
+    bool reconcileJournalOnQueue(std::string *error);
     void stopOnQueue(bool *cleaned, std::string *error);
     void refreshTickOnQueue();
 

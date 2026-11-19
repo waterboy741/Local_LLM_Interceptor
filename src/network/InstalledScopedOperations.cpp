@@ -627,8 +627,17 @@ bool InstalledScopedOperations::startOnQueue(const InstalledSessionTuple &tuple,
         return false;
     }
     if (journal_.hasRecords()) {
-        fail(error, "recovery_pending");
-        return false;
+        // A previous start died with obligations outstanding (process restart with a journaled
+        // enable token, anchor, or settings restore). Attempt the ordered reconciliation before
+        // deciding: fully verified recovery clears the journal and the fresh start proceeds, and
+        // any uncertain or failed step stays recovery_pending so the operator is never told a
+        // lie.
+        std::string recoveryError;
+        if (!reconcileJournalOnQueue(&recoveryError)) {
+            if (error)
+                *error = recoveryError.empty() ? "recovery_pending" : recoveryError;
+            return false;
+        }
     }
 
     // Neighbor and interface facts (fresh, never cached): the interface MAC must be live, and
@@ -745,6 +754,84 @@ bool InstalledScopedOperations::startOnQueue(const InstalledSessionTuple &tuple,
         return failStart("arp_refresh_timer_unavailable");
     facts_ = facts;
     refreshUnhealthy_ = false;
+    return true;
+}
+
+bool InstalledScopedOperations::reconcileJournalOnQueue(std::string *error) {
+    // Parse the durable records exactly as startOnQueue writes them; anything unrecognized or
+    // unparsable keeps the journal and the recovery_pending verdict.
+    std::string anchor;
+    unsigned long long token = 0;
+    bool tokenUncertain = false;
+    int previousForwarding = -1, previousSendRedirects = -1;
+    const auto recoverFailure = [error] {
+        // Every reconciliation failure keeps the single bounded verdict from the contract
+        // vocabulary; the specific failed step stays visible through the helper-side reject log.
+        if (error)
+            *error = "recovery_pending";
+        return false;
+    };
+    for (const std::string &record : journal_.records()) {
+        const auto prefixMatch = [&record](const char *prefix) {
+            const std::size_t length = std::strlen(prefix);
+            return record.size() > length && record.compare(0, length, prefix) == 0
+                       ? record.substr(length)
+                       : std::string();
+        };
+        if (record == "pf-token-uncertain") {
+            // An unnamed token cannot be released with reference verification; recovery stays
+            // pending and the operator-facing verdict names it truthfully.
+            tokenUncertain = true;
+            continue;
+        }
+        if (std::string value = prefixMatch("pf-token "); !value.empty()) {
+            char *end = nullptr;
+            token = std::strtoull(value.c_str(), &end, 10);
+            if (!end || *end != '\0' || token == 0)
+                return recoverFailure();
+            continue;
+        }
+        if (std::string value = prefixMatch("anchor "); !value.empty()) {
+            anchor = value;
+            continue;
+        }
+        if (std::string value = prefixMatch("forwarding-restore "); !value.empty()) {
+            previousForwarding = std::atoi(value.c_str());
+            if (previousForwarding < 0)
+                return recoverFailure();
+            continue;
+        }
+        if (std::string value = prefixMatch("redirects-restore "); !value.empty()) {
+            previousSendRedirects = std::atoi(value.c_str());
+            if (previousSendRedirects < 0)
+                return recoverFailure();
+            continue;
+        }
+        return recoverFailure();
+    }
+    if (tokenUncertain)
+        return recoverFailure();
+    // Journal-order integrity: startOnQueue always appends the enable reference before any
+    // anchor or settings record, so a journal without a token record is corrupt or synthetic and
+    // stays recovery_pending without a single command. Only a named token reconciles.
+    if (token == 0)
+        return recoverFailure();
+
+    // Reconcile in exactly the teardown order: owned anchor first (verified removal), then the
+    // journaled previous kernel settings, then the exact enable reference (verified absence).
+    // A failed or uncertain step keeps the record; only full verified recovery truncates.
+    if (!anchor.empty() && !removeAnchorVerified(anchor, error))
+        return recoverFailure();
+    if (previousForwarding >= 0 &&
+        !settings_.write(std::string(forwardingName), previousForwarding))
+        return recoverFailure();
+    if (previousSendRedirects >= 0 &&
+        !settings_.write(std::string(sendRedirectsName), previousSendRedirects))
+        return recoverFailure();
+    if (token != 0 && !releaseTokenVerified(token, error))
+        return recoverFailure();
+    if (!journal_.clear())
+        return recoverFailure();
     return true;
 }
 

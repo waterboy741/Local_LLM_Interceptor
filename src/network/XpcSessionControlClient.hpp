@@ -50,13 +50,17 @@ class XpcSessionControlClient final {
   public:
     static constexpr int defaultTimeoutMs = 2500;
     static constexpr int maximumTimeoutMs = 10000;
+    // An owned Start legitimately performs several bounded privileged subprocesses (arp facts,
+    // pfctl -E, anchor install, listing verifications, settings, BPF open + first frames), so its
+    // deadline is documented separately at the maximum; every other request stays at the default.
+    static constexpr int startTimeoutMs = 10000;
     static constexpr qsizetype capabilityBytes = 32;
 
     // One-time probe secret is moved into the request and wiped after use by the caller.
     static XpcSessionControlClientResult start(const XpcSessionControlClientTuple &tuple,
                                                const QByteArray &probeSecret,
                                                const QByteArray &helperRequirement,
-                                               int timeoutMs = defaultTimeoutMs);
+                                               int timeoutMs = startTimeoutMs);
     static XpcSessionControlClientResult heartbeat(const QString &sessionId,
                                                    const QByteArray &capability,
                                                    const QByteArray &helperRequirement,
